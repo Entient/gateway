@@ -678,7 +678,7 @@ function formatReport(sub, window) {
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  const opts = { last: "7d", json: false, command: null, hook: null };
+  const opts = { last: "7d", json: false, report: false, command: null, hook: null };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "install")        { opts.command = "install";   }
     else if (args[i] === "uninstall") { opts.command = "uninstall"; }
@@ -687,7 +687,8 @@ function parseArgs() {
     else if (args[i] === "--hook" && args[i + 1]) { opts.hook = args[++i]; }
     else if ((args[i] === "--last" || args[i] === "-l") && args[i + 1]) opts.last = args[++i];
     else if (args[i].startsWith("--last=")) opts.last = args[i].slice(7);
-    else if (args[i] === "--json") opts.json = true;
+    else if (args[i] === "--json")   opts.json = true;
+    else if (args[i] === "--report") opts.report = true;
     else if (args[i] === "--help" || args[i] === "-h") {
       console.log("Usage: claude-audit [install|uninstall|status] [--last 7d] [--json]");
       process.exit(0);
@@ -776,13 +777,13 @@ function printDashboard(sub, bug, enforced) {
 
   console.log("");
   console.log(bold(`  ┌${"─".repeat(W2)}┐`));
-  console.log(bold(`  │`) + cyan(bold("  CLAUDE AUDIT".padEnd(W2))) + bold("│"));
+  console.log(bold(`  │`) + cyan(bold("  ENTIENT / claude-audit".padEnd(W2-2))) + "  " + bold("│"));
+  console.log(bold(`  │`) + dim("  entient.ai — AI cost enforcement".padEnd(W2)) + bold("│"));
   console.log(bold(`  ├${line}┤`));
   console.log(bold("  │") + `  Last 7 days`.padEnd(W2) + bold("│"));
   console.log(bold("  │") + `  ${bold(t.toLocaleString())} prompts   ${haikuPct >= 40 ? red(bold(`${haikuPct}% wasted on wrong model`)) : green(`${haikuPct}% waste`)}   ${badSessions > 0 ? red(`${badSessions} problem sessions`) : green("0 problem sessions")}`.padEnd(W2 + 20) + bold("│"));
   console.log(bold("  │") + "".padEnd(W2) + bold("│"));
 
-  // Cache bug line
   if (bug.bugged > 0) {
     const bugPct = Math.round(bug.bugged / bug.total * 100);
     const bugM   = (bug.buggedTokens / 1_000_000).toFixed(0);
@@ -791,7 +792,6 @@ function printDashboard(sub, bug, enforced) {
     console.log(bold("  │") + `  ${green("✓")} Cache bug: ${green("not affected")} (you're on a clean version)`.padEnd(W2 + 15) + bold("│"));
   }
 
-  // Enforcement line
   if (enforced) {
     console.log(bold("  │") + `  ${green("✓")} Enforcement: ${green("active")} — blocking runaway sessions automatically`.padEnd(W2 + 15) + bold("│"));
   } else {
@@ -808,6 +808,7 @@ function printDashboard(sub, bug, enforced) {
   } else {
     console.log(`  ${bold("4.")} ${yellow("Turn on auto-enforcement")}  ${dim("← blocks runaway sessions, saves context")}`);
   }
+  console.log(`  ${bold("5.")} Export report  ${dim("← shareable HTML file")}`);
   console.log(`  ${bold("q.")} Quit`);
   console.log("");
 }
@@ -959,6 +960,240 @@ function showEnforceScreen(enforced) {
   console.log("");
 }
 
+// ── HTML report ──────────────────────────────────────────────────────────────
+
+function generateHTML(sub, bug, enforced) {
+  const t = sub.available ? sub.totalPrompts : 0;
+  const c = sub.available ? (sub.complexity || {}) : {};
+  const model = sub.available ? sub.configuredModel : "unknown";
+  const haiku = sub.available ? sub.haikuEligible : 0;
+  const haikuPct = t > 0 ? Math.round(haiku / t * 100) : 0;
+  const highPct  = t > 0 ? Math.round((c.high||0) / t * 100) : 0;
+  const ackPct   = t > 0 ? Math.round((c.continuation||0) / t * 100) : 0;
+  const wa = sub.available ? (sub.wasteAnalysis || []) : [];
+  const badSessions = wa.filter(s => s.wasteTypes.length > 0).length;
+  const bugPct = bug.total > 0 ? Math.round(bug.bugged / bug.total * 100) : 0;
+  const bugM   = (bug.buggedTokens / 1_000_000).toFixed(0);
+
+  const wasteColor = haikuPct >= 50 ? "#e74c3c" : haikuPct >= 30 ? "#f39c12" : "#27ae60";
+  const now = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+
+  const sessionRows = wa.slice(0, 8).map((s, i) => {
+    const dt = new Date(s.lastTs).toISOString().slice(0, 10);
+    const issues = [];
+    if (s.wasteTypes.includes("wrong_model"))    issues.push(`${s.haikuPct}% ran on ${model} unnecessarily`);
+    if (s.wasteTypes.includes("session_bloat"))  issues.push(`${s.ackPct}% confirmation loops`);
+    if (s.wasteTypes.includes("context_replay")) issues.push(`${s.durationHrs}h session — context ballooned`);
+    const badgeColor = s.wasteTypes.length >= 2 ? "#e74c3c" : s.wasteTypes.length === 1 ? "#f39c12" : "#27ae60";
+    const badgeText  = s.wasteTypes.length >= 2 ? "⚠ triple-cost" : s.wasteTypes.length === 1 ? "! issue" : "✓ ok";
+    return `
+      <tr>
+        <td style="color:#888;font-size:12px">${dt}</td>
+        <td><strong>${s.project}</strong></td>
+        <td>${s.prompts} turns / ${s.durationHrs}h</td>
+        <td><span style="color:${badgeColor};font-weight:600">${badgeText}</span></td>
+        <td style="font-size:13px;color:#aaa">${issues.join(" · ") || "—"}</td>
+        <td style="font-size:12px;color:#7fb3f5">${s.recommendedStartModel.toUpperCase()} — ${s.escalation}</td>
+      </tr>`;
+  }).join("");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Entient — Claude Audit Report</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 32px 24px; max-width: 900px; margin: 0 auto; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 32px; }
+  .brand { font-size: 22px; font-weight: 700; color: #58a6ff; letter-spacing: -0.5px; }
+  .brand span { color: #8b949e; font-weight: 400; font-size: 14px; margin-left: 8px; }
+  .date { color: #8b949e; font-size: 13px; margin-top: 4px; }
+  .tagline { color: #8b949e; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 28px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
+  .card-label { font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .card-value { font-size: 32px; font-weight: 700; line-height: 1; }
+  .card-sub { font-size: 13px; color: #8b949e; margin-top: 6px; }
+  .section { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 24px; margin-bottom: 20px; }
+  .section-title { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: #8b949e; margin-bottom: 20px; }
+  .bar-row { display: flex; align-items: center; margin-bottom: 10px; gap: 12px; }
+  .bar-label { font-size: 13px; color: #e6edf3; width: 180px; flex-shrink: 0; }
+  .bar-track { flex: 1; background: #21262d; border-radius: 4px; height: 8px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; }
+  .bar-pct { font-size: 13px; color: #8b949e; width: 40px; text-align: right; }
+  .bar-count { font-size: 12px; color: #555; width: 50px; text-align: right; }
+  table { width: 100%; border-collapse: collapse; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #8b949e; text-align: left; padding: 0 12px 12px 0; border-bottom: 1px solid #21262d; }
+  td { font-size: 13px; padding: 10px 12px 10px 0; border-bottom: 1px solid #161b22; vertical-align: top; }
+  .status-row { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .badge { padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; }
+  .badge-red { background: rgba(231,76,60,0.15); color: #e74c3c; border: 1px solid rgba(231,76,60,0.3); }
+  .badge-green { background: rgba(39,174,96,0.15); color: #27ae60; border: 1px solid rgba(39,174,96,0.3); }
+  .badge-yellow { background: rgba(243,156,18,0.15); color: #f39c12; border: 1px solid rgba(243,156,18,0.3); }
+  .insight { background: #0d1117; border-left: 3px solid #58a6ff; padding: 14px 16px; margin-top: 16px; font-size: 14px; line-height: 1.6; color: #c9d1d9; }
+  .insight strong { color: #e6edf3; }
+  .cta { background: linear-gradient(135deg, #1a2744 0%, #162032 100%); border: 1px solid #30363d; border-radius: 8px; padding: 24px; text-align: center; margin-top: 24px; }
+  .cta-title { font-size: 18px; font-weight: 700; color: #58a6ff; margin-bottom: 8px; }
+  .cta-sub { font-size: 14px; color: #8b949e; line-height: 1.6; }
+  .cta-url { color: #58a6ff; font-weight: 600; text-decoration: none; font-size: 15px; }
+  .footer { text-align: center; color: #555; font-size: 12px; margin-top: 32px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="brand">ENTIENT <span>/ claude-audit</span></div>
+    <div class="date">Report generated ${now} · Last 7 days</div>
+  </div>
+  <div class="tagline">entient.ai — AI cost enforcement</div>
+</div>
+
+<div class="status-row">
+  ${bug.bugged > 0
+    ? `<span class="badge badge-yellow">⚠ Cache bug: ${bugPct}% of sessions affected</span>`
+    : `<span class="badge badge-green">✓ No cache bug exposure</span>`}
+  ${enforced
+    ? `<span class="badge badge-green">✓ Enforcement active</span>`
+    : `<span class="badge badge-red">✗ Enforcement off — sessions can burn freely</span>`}
+  <span class="badge ${haikuPct >= 40 ? "badge-red" : "badge-green"}">${haikuPct}% of prompts wasted on wrong model</span>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-label">Total prompts</div>
+    <div class="card-value">${t.toLocaleString()}</div>
+    <div class="card-sub">last 7 days, on ${model}</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Wasted on wrong model</div>
+    <div class="card-value" style="color:${wasteColor}">${haikuPct}%</div>
+    <div class="card-sub">${haiku} prompts that didn't need ${model}</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Problem sessions</div>
+    <div class="card-value" style="color:${badSessions > 0 ? "#e74c3c" : "#27ae60"}">${badSessions}</div>
+    <div class="card-sub">of ${wa.length} analysed — wrong model, bloat, or replay</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">What your prompts actually were</div>
+  <div class="bar-row">
+    <div class="bar-label">ACKs &amp; one-liners</div>
+    <div class="bar-track"><div class="bar-fill" style="width:${ackPct}%;background:#e74c3c"></div></div>
+    <div class="bar-pct">${ackPct}%</div>
+    <div class="bar-count">${(c.continuation||0).toLocaleString()}</div>
+  </div>
+  <div class="bar-row">
+    <div class="bar-label">Simple questions</div>
+    <div class="bar-track"><div class="bar-fill" style="width:${t>0?Math.round((c.low||0)/t*100):0}%;background:#f39c12"></div></div>
+    <div class="bar-pct">${t>0?Math.round((c.low||0)/t*100):0}%</div>
+    <div class="bar-count">${(c.low||0).toLocaleString()}</div>
+  </div>
+  <div class="bar-row">
+    <div class="bar-label">Medium complexity</div>
+    <div class="bar-track"><div class="bar-fill" style="width:${t>0?Math.round((c.medium||0)/t*100):0}%;background:#8b949e"></div></div>
+    <div class="bar-pct">${t>0?Math.round((c.medium||0)/t*100):0}%</div>
+    <div class="bar-count">${(c.medium||0).toLocaleString()}</div>
+  </div>
+  <div class="bar-row">
+    <div class="bar-label">Actually needed ${model}</div>
+    <div class="bar-track"><div class="bar-fill" style="width:${highPct}%;background:#27ae60"></div></div>
+    <div class="bar-pct">${highPct}%</div>
+    <div class="bar-count">${(c.high||0).toLocaleString()}</div>
+  </div>
+  <div class="insight">
+    <strong>${haikuPct}% of your prompts</strong> were simple enough for Haiku but ran on ${model}.
+    Only <strong>${highPct}%</strong> actually required ${model}-level reasoning.
+    ${ackPct >= 40 ? `<br><br><strong>${ackPct}% were one-word confirmations</strong> ("ok", "proceed", "continue") — each one re-sent your entire conversation history at full price.` : ""}
+  </div>
+</div>
+
+${bug.bugged > 0 ? `
+<div class="section">
+  <div class="section-title">Cache bug exposure</div>
+  <p style="color:#c9d1d9;font-size:14px;line-height:1.7">
+    Claude Code versions <strong>2.1.69–2.1.89</strong> had a broken prompt cache that caused
+    <strong>10–20x token burn</strong> on long sessions. Instead of reusing cached context,
+    every turn paid full price to re-process the entire conversation history.
+  </p>
+  <br>
+  <p style="font-size:14px;color:#e6edf3">
+    <strong style="color:#f39c12">${bug.bugged} of ${bug.total} sessions (${bugPct}%)</strong> ran under this bug.
+    Approximately <strong>${bugM}M tokens</strong> were consumed under broken caching.
+    These cannot be recovered — but you're now on a clean version.
+  </p>
+</div>` : ""}
+
+<div class="section">
+  <div class="section-title">Top sessions by waste</div>
+  <table>
+    <tr>
+      <th>Date</th><th>Project</th><th>Size</th><th>Status</th><th>Issues</th><th>Fix</th>
+    </tr>
+    ${sessionRows}
+  </table>
+</div>
+
+<div class="section">
+  <div class="section-title">What to do</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    <div>
+      <div style="font-weight:600;margin-bottom:6px;color:#58a6ff">1. Use the right model</div>
+      <div style="font-size:13px;color:#8b949e;line-height:1.6">Start exploratory sessions on Haiku (<code style="color:#79c0ff">/model haiku</code>). Switch to Sonnet only when real complexity arrives.</div>
+    </div>
+    <div>
+      <div style="font-weight:600;margin-bottom:6px;color:#58a6ff">2. Stop confirmation loops</div>
+      <div style="font-size:13px;color:#8b949e;line-height:1.6">Batch your intent. Instead of "ok → proceed → go ahead", say what you want in a single prompt.</div>
+    </div>
+    <div>
+      <div style="font-weight:600;margin-bottom:6px;color:#58a6ff">3. Rotate sessions</div>
+      <div style="font-size:13px;color:#8b949e;line-height:1.6">After 30 turns, use <code style="color:#79c0ff">/compact</code> or start fresh. Context cost grows linearly — a fresh session resets it to near zero.</div>
+    </div>
+    <div>
+      <div style="font-weight:600;margin-bottom:6px;color:#58a6ff">4. Enable auto-enforcement</div>
+      <div style="font-size:13px;color:#8b949e;line-height:1.6">Run <code style="color:#79c0ff">claude-audit install</code> to block sessions at 10x waste automatically. Context is saved and injected on resume.</div>
+    </div>
+  </div>
+</div>
+
+<div class="cta">
+  <div class="cta-title">Want this enforced automatically?</div>
+  <div class="cta-sub">
+    Entient routes each prompt to the right model and deflects repeated patterns entirely.<br>
+    No manual switching. No session rotation. No wasted tokens.
+  </div>
+  <br>
+  <a class="cta-url" href="https://entient.ai">entient.ai →</a>
+</div>
+
+<div class="footer">
+  Generated by <strong>Entient / claude-audit</strong> · Data read locally, nothing uploaded · <a href="https://entient.ai" style="color:#555">entient.ai</a>
+</div>
+
+</body>
+</html>`;
+}
+
+function exportReport(sub, bug, enforced) {
+  const html = generateHTML(sub, bug, enforced);
+  const outPath = path.join(os.homedir(), "claude-audit-report.html");
+  fs.writeFileSync(outPath, html, "utf8");
+  console.log(`\n  ${green("✓")} Report saved: ${bold(outPath)}`);
+  console.log(`  Open in your browser to view and share.`);
+  // Try to open in default browser
+  try {
+    const { execSync } = require("child_process");
+    const cmd = process.platform === "win32" ? `start "" "${outPath}"`
+              : process.platform === "darwin" ? `open "${outPath}"`
+              : `xdg-open "${outPath}"`;
+    execSync(cmd, { stdio: "ignore" });
+  } catch (_) {}
+}
+
 async function menu() {
   const readline = require("readline");
 
@@ -1001,6 +1236,9 @@ async function menu() {
           await ask("  Press Enter to continue.");
         }
       }
+    } else if (choice === "5") {
+      exportReport(sub, bug, enforced);
+      await ask("  Press Enter to continue.");
     } else if (choice === "q" || choice === "quit" || choice === "exit") {
       clearScreen();
       break;
@@ -1028,6 +1266,16 @@ function main() {
     const { since } = parseWindow(opts.last);
     const sub = readSubscriptionActivity(since);
     console.log(JSON.stringify({ window: opts.last, subscription: sub }, null, 2));
+    return;
+  }
+
+  // HTML report export
+  if (opts.report) {
+    const { since } = parseWindow(opts.last);
+    const sub = readSubscriptionActivity(since);
+    const bug = scanCacheBugFast();
+    const enforced = hooksInstalled();
+    exportReport(sub, bug, enforced);
     return;
   }
 
