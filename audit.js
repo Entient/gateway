@@ -211,13 +211,37 @@ function hookCompact() {
 }
 
 function hookStart() {
-  if (!fs.existsSync(LAST_SESSION)) { process.exit(0); }
+  const parts = [];
 
-  const age = Date.now() - fs.statSync(LAST_SESSION).mtimeMs;
-  if (age > 48 * 3_600_000) { process.exit(0); }  // ignore if >48h old
+  // Inject previous session context if recent
+  if (fs.existsSync(LAST_SESSION)) {
+    const age = Date.now() - fs.statSync(LAST_SESSION).mtimeMs;
+    if (age <= 48 * 3_600_000) {
+      parts.push(fs.readFileSync(LAST_SESSION, "utf8"));
+    }
+  }
 
-  const context = fs.readFileSync(LAST_SESSION, "utf8");
-  process.stdout.write(JSON.stringify({ additionalContext: context }) + "\n");
+  // Model recommendation — score last 7 days and advise on start model
+  try {
+    const { since } = parseWindow("7d");
+    const sub = readSubscriptionActivity(since);
+    if (sub.available && sub.totalPrompts >= 20) {
+      const haikuPct = Math.round(sub.haikuEligible / sub.totalPrompts * 100);
+      if (haikuPct >= 40) {
+        parts.push(
+          `## Model advisory (claude-audit)\n` +
+          `${haikuPct}% of your last 7 days of prompts were Haiku-eligible — ` +
+          `simple questions, confirmations, one-liners that ran on ${sub.configuredModel} unnecessarily.\n` +
+          `Consider starting this session with \`/model haiku\` and escalating to Sonnet only when the task gets complex.\n` +
+          `This could cut your token spend by 40–60% for light work.`
+        );
+      }
+    }
+  } catch (_) {}
+
+  if (parts.length === 0) { process.exit(0); }
+
+  process.stdout.write(JSON.stringify({ additionalContext: parts.join("\n\n---\n\n") }) + "\n");
   process.exit(0);
 }
 
@@ -813,7 +837,7 @@ function printDashboard(sub, bug, enforced) {
 
   console.log("");
   console.log(bold(`  ┌${"─".repeat(W2)}┐`));
-  console.log(bold(`  │`) + cyan(bold("  ENTIENT / claude-audit".padEnd(W2-2))) + "  " + bold("│"));
+  console.log(bold(`  │`) + bold("  ENTIENT / claude-audit".padEnd(W2)) + bold("│"));
   console.log(bold(`  │`) + dim("  entient.ai — AI cost enforcement".padEnd(W2)) + bold("│"));
   console.log(bold(`  ├${line}┤`));
   console.log(bold("  │") + `  Last 7 days`.padEnd(W2) + bold("│"));
@@ -860,32 +884,30 @@ function showMoneyScreen(sub) {
   const replaySessions = wa.filter(s => s.wasteTypes.includes("context_replay")).length;
 
   console.log("");
-  console.log(bold(cyan("  WHERE IS MY MONEY GOING?")));
+  console.log(bold("  WHERE IS MY MONEY GOING?"));
   console.log("  " + "─".repeat(54));
   console.log("");
-  console.log(`  ${bold("Wrong model")}  ${red(bold(`${haikuPct}% of your prompts`))} didn't need ${model}.`);
-  console.log(`  They were simple questions, confirmations, one-liners.`);
-  console.log(`  All of them ran on ${model} anyway.`);
+  console.log(`  Wrong model          ${haikuPct >= 40 ? red(bold(`${haikuPct}%`)) : bold(`${haikuPct}%`)} of prompts didn't need ${model}.`);
+  console.log(`                       Simple questions, confirmations, one-liners.`);
+  console.log(`                       All ran on ${model} anyway.`);
   console.log("");
-  console.log(`  ${bold("Confirmation loops")}  ${ackPct}% of your prompts were:`);
-  console.log(`  "ok" / "proceed" / "go ahead" / "continue" / "yes"`);
-  console.log(`  Each one re-sent your ${dim("entire")} conversation history to the model.`);
-  console.log(`  Zero new information. Full price.`);
+  console.log(`  Confirmation loops   ${ackPct}% of prompts were "ok" / "proceed" / "yes".`);
+  console.log(`                       Each re-sent the entire conversation history.`);
+  console.log(`                       Zero new information. Full price.`);
   console.log("");
-  console.log(`  ${bold("Context replay")}  ${replaySessions} sessions ran so long that`);
-  console.log(`  by turn 30+, each prompt was carrying 10k–30k tokens`);
-  console.log(`  of old conversation that the model had already seen.`);
+  console.log(`  Context replay       ${replaySessions} sessions ran long enough for context`);
+  console.log(`                       to balloon — 10k–30k tokens of seen history per turn.`);
   console.log("");
-  console.log(`  ${bold("Only")} ${red(bold(`${highPct}%`))} of your prompts actually needed ${model}-level reasoning.`);
+  console.log(`  Work that needed ${model}  ${bold(`${highPct}%`)} of prompts actually required it.`);
   console.log("");
 
   // Prompt complexity bar chart
   console.log(`  ${dim("Prompt breakdown:")}`);
-  const order = [["continuation","ACKs / one-liners ",C.red],["low","Simple questions  ",C.yellow],["medium","Medium tasks      ",C.white],["high","Complex work      ",C.green]];
-  for (const [key, label, color] of order) {
+  const order = [["continuation","ACKs / one-liners "],["low","Simple questions  "],["medium","Medium tasks      "],["high","Complex work      "]];
+  for (const [key, label] of order) {
     const n = c[key] || 0, pct = t > 0 ? Math.round(n/t*100) : 0;
     const bar = "█".repeat(Math.round(pct / 3));
-    console.log(`  ${label}  ${color}${bar}${C.reset}  ${String(pct).padStart(3)}%  (${n})`);
+    console.log(`  ${label}  ${dim(bar)}  ${String(pct).padStart(3)}%  (${n})`);
   }
   console.log("");
   console.log(dim("  Press Enter to go back."));
@@ -897,7 +919,7 @@ function showSessionsScreen(sub) {
   const model = sub.configuredModel;
 
   console.log("");
-  console.log(bold(cyan("  WORST SESSIONS")));
+  console.log(bold("  WORST SESSIONS"));
   console.log("  " + "─".repeat(54));
   console.log("");
 
@@ -935,7 +957,7 @@ function showSessionsScreen(sub) {
 function showCacheScreen(bug) {
   clearScreen();
   console.log("");
-  console.log(bold(cyan("  CACHE BUG")));
+  console.log(bold("  CACHE BUG"));
   console.log("  " + "─".repeat(54));
   console.log("");
   console.log(`  Claude Code versions ${bold("2.1.69 – 2.1.89")} had a broken prompt cache.`);
@@ -968,7 +990,7 @@ function showCacheScreen(bug) {
 function showEnforceScreen(enforced) {
   clearScreen();
   console.log("");
-  console.log(bold(cyan("  AUTO-ENFORCEMENT")));
+  console.log(bold("  AUTO-ENFORCEMENT"));
   console.log("  " + "─".repeat(54));
   console.log("");
 
