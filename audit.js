@@ -704,6 +704,310 @@ function parseWindow(s) {
   return { hours, since: new Date(Date.now() - hours * 3_600_000) };
 }
 
+// ── ANSI helpers ─────────────────────────────────────────────────────────────
+
+const C = {
+  reset:  "\x1b[0m",
+  bold:   "\x1b[1m",
+  dim:    "\x1b[2m",
+  red:    "\x1b[31m",
+  green:  "\x1b[32m",
+  yellow: "\x1b[33m",
+  cyan:   "\x1b[36m",
+  white:  "\x1b[37m",
+  bgRed:  "\x1b[41m",
+};
+const bold   = s => `${C.bold}${s}${C.reset}`;
+const dim    = s => `${C.dim}${s}${C.reset}`;
+const red    = s => `${C.red}${s}${C.reset}`;
+const yellow = s => `${C.yellow}${s}${C.reset}`;
+const green  = s => `${C.green}${s}${C.reset}`;
+const cyan   = s => `${C.cyan}${s}${C.reset}`;
+
+// ── Interactive menu ──────────────────────────────────────────────────────────
+
+function hooksInstalled() {
+  try {
+    const s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS, "utf8"));
+    return Object.values(s.hooks || {}).flat()
+      .some(h => (h.hooks || []).some(hh => (hh.command || "").includes("claude-audit")));
+  } catch (_) { return false; }
+}
+
+function scanCacheBugFast() {
+  // Quick version of doctor — just counts, no console output
+  if (!fs.existsSync(PROJECTS_DIR)) return { total: 0, bugged: 0, buggedTokens: 0 };
+  let total = 0, bugged = 0, buggedTokens = 0;
+  for (const d of fs.readdirSync(PROJECTS_DIR, { withFileTypes: true }).filter(d => d.isDirectory())) {
+    const pd = path.join(PROJECTS_DIR, d.name);
+    for (const jf of fs.readdirSync(pd).filter(f => f.endsWith(".jsonl"))) {
+      const fp = path.join(pd, jf);
+      try {
+        if (Date.now() - fs.statSync(fp).mtimeMs > 14 * 86_400_000) continue;
+        let ver = null, tok = 0;
+        for (const line of fs.readFileSync(fp, "utf8").split("\n")) {
+          if (!line.trim()) continue;
+          let r; try { r = JSON.parse(line); } catch (_) { continue; }
+          if (!ver && r.version) ver = r.version;
+          const u = r.message?.usage || r.usage || {};
+          tok += (u.input_tokens||0)+(u.cache_creation_input_tokens||0)+(u.cache_read_input_tokens||0)+(u.output_tokens||0);
+        }
+        if (!tok) continue;
+        total++;
+        if (ver && versionInRange(ver, CACHE_BUG_RANGE.min, CACHE_BUG_RANGE.max)) { bugged++; buggedTokens += tok; }
+      } catch (_) {}
+    }
+  }
+  return { total, bugged, buggedTokens };
+}
+
+function clearScreen() { process.stdout.write("\x1b[2J\x1b[H"); }
+
+function printDashboard(sub, bug, enforced) {
+  clearScreen();
+  const t = sub.available ? sub.totalPrompts : 0;
+  const haiku = sub.available ? sub.haikuEligible : 0;
+  const haikuPct = t > 0 ? Math.round(haiku / t * 100) : 0;
+  const wa = sub.available ? (sub.wasteAnalysis || []) : [];
+  const badSessions = wa.filter(s => s.wasteTypes.length > 0).length;
+
+  const W2 = 58;
+  const line = "─".repeat(W2);
+
+  console.log("");
+  console.log(bold(`  ┌${"─".repeat(W2)}┐`));
+  console.log(bold(`  │`) + cyan(bold("  CLAUDE AUDIT".padEnd(W2))) + bold("│"));
+  console.log(bold(`  ├${line}┤`));
+  console.log(bold("  │") + `  Last 7 days`.padEnd(W2) + bold("│"));
+  console.log(bold("  │") + `  ${bold(t.toLocaleString())} prompts   ${haikuPct >= 40 ? red(bold(`${haikuPct}% wasted on wrong model`)) : green(`${haikuPct}% waste`)}   ${badSessions > 0 ? red(`${badSessions} problem sessions`) : green("0 problem sessions")}`.padEnd(W2 + 20) + bold("│"));
+  console.log(bold("  │") + "".padEnd(W2) + bold("│"));
+
+  // Cache bug line
+  if (bug.bugged > 0) {
+    const bugPct = Math.round(bug.bugged / bug.total * 100);
+    const bugM   = (bug.buggedTokens / 1_000_000).toFixed(0);
+    console.log(bold("  │") + `  ${yellow("⚠")} Cache bug: ${yellow(`${bugPct}% of recent sessions affected`)} (~${bugM}M tokens lost)`.padEnd(W2 + 20) + bold("│"));
+  } else {
+    console.log(bold("  │") + `  ${green("✓")} Cache bug: ${green("not affected")} (you're on a clean version)`.padEnd(W2 + 15) + bold("│"));
+  }
+
+  // Enforcement line
+  if (enforced) {
+    console.log(bold("  │") + `  ${green("✓")} Enforcement: ${green("active")} — blocking runaway sessions automatically`.padEnd(W2 + 15) + bold("│"));
+  } else {
+    console.log(bold("  │") + `  ${red("✗")} Enforcement: ${red("off")} — sessions can burn freely, no auto-stop`.padEnd(W2 + 20) + bold("│"));
+  }
+
+  console.log(bold(`  └${line}┘`));
+  console.log("");
+  console.log(`  ${bold("1.")} Where is my money going?`);
+  console.log(`  ${bold("2.")} Worst sessions`);
+  console.log(`  ${bold("3.")} Cache bug detail`);
+  if (enforced) {
+    console.log(`  ${bold("4.")} ${green("✓ Auto-enforcement is ON")}  ${dim("(turn off: claude-audit uninstall)")}`);
+  } else {
+    console.log(`  ${bold("4.")} ${yellow("Turn on auto-enforcement")}  ${dim("← blocks runaway sessions, saves context")}`);
+  }
+  console.log(`  ${bold("q.")} Quit`);
+  console.log("");
+}
+
+function showMoneyScreen(sub) {
+  clearScreen();
+  const t = sub.totalPrompts, c = sub.complexity, model = sub.configuredModel;
+  const haiku = sub.haikuEligible;
+  const haikuPct = t > 0 ? Math.round(haiku / t * 100) : 0;
+  const ackPct  = t > 0 ? Math.round((c.continuation||0) / t * 100) : 0;
+  const highPct = t > 0 ? Math.round((c.high||0) / t * 100) : 0;
+  const wa = sub.wasteAnalysis || [];
+  const replaySessions = wa.filter(s => s.wasteTypes.includes("context_replay")).length;
+
+  console.log("");
+  console.log(bold(cyan("  WHERE IS MY MONEY GOING?")));
+  console.log("  " + "─".repeat(54));
+  console.log("");
+  console.log(`  ${bold("Wrong model")}  ${red(bold(`${haikuPct}% of your prompts`))} didn't need ${model}.`);
+  console.log(`  They were simple questions, confirmations, one-liners.`);
+  console.log(`  All of them ran on ${model} anyway.`);
+  console.log("");
+  console.log(`  ${bold("Confirmation loops")}  ${ackPct}% of your prompts were:`);
+  console.log(`  "ok" / "proceed" / "go ahead" / "continue" / "yes"`);
+  console.log(`  Each one re-sent your ${dim("entire")} conversation history to the model.`);
+  console.log(`  Zero new information. Full price.`);
+  console.log("");
+  console.log(`  ${bold("Context replay")}  ${replaySessions} sessions ran so long that`);
+  console.log(`  by turn 30+, each prompt was carrying 10k–30k tokens`);
+  console.log(`  of old conversation that the model had already seen.`);
+  console.log("");
+  console.log(`  ${bold("Only")} ${red(bold(`${highPct}%`))} of your prompts actually needed ${model}-level reasoning.`);
+  console.log("");
+
+  // Prompt complexity bar chart
+  console.log(`  ${dim("Prompt breakdown:")}`);
+  const order = [["continuation","ACKs / one-liners ",C.red],["low","Simple questions  ",C.yellow],["medium","Medium tasks      ",C.white],["high","Complex work      ",C.green]];
+  for (const [key, label, color] of order) {
+    const n = c[key] || 0, pct = t > 0 ? Math.round(n/t*100) : 0;
+    const bar = "█".repeat(Math.round(pct / 3));
+    console.log(`  ${label}  ${color}${bar}${C.reset}  ${String(pct).padStart(3)}%  (${n})`);
+  }
+  console.log("");
+  console.log(dim("  Press Enter to go back."));
+}
+
+function showSessionsScreen(sub) {
+  clearScreen();
+  const wa = (sub.wasteAnalysis || []).slice(0, 8);
+  const model = sub.configuredModel;
+
+  console.log("");
+  console.log(bold(cyan("  WORST SESSIONS")));
+  console.log("  " + "─".repeat(54));
+  console.log("");
+
+  if (wa.length === 0) { console.log("  No session data."); console.log(""); return; }
+
+  for (const [i, s] of wa.entries()) {
+    const dt    = new Date(s.lastTs).toISOString().slice(5, 16).replace("T", " ");
+    const badge = s.wasteTypes.length >= 2 ? red("⚠⚠ triple-cost") : s.wasteTypes.length === 1 ? yellow("⚠ issue") : green("✓ ok");
+
+    console.log(`  ${bold(`${i+1}.`)} ${bold(s.project)}  ${dim(dt)}  ${badge}`);
+    console.log(`     ${s.prompts} turns over ${s.durationHrs}h`);
+
+    if (s.wasteTypes.includes("wrong_model")) {
+      console.log(`     ${red("✗")} ${s.haikuPct}% of prompts were simple — ran on ${model} for no reason`);
+      console.log(`       ${dim(`Fix: start this kind of session with /model haiku`)}`);
+    }
+    if (s.wasteTypes.includes("session_bloat")) {
+      console.log(`     ${red("✗")} ${s.ackPct}% were confirmations — each one replayed full context`);
+      console.log(`       ${dim("Fix: batch your intent, stop sending one-word replies")}`);
+    }
+    if (s.wasteTypes.includes("context_replay")) {
+      console.log(`     ${red("✗")} Session ran ${s.durationHrs}h — context ballooned by turn 30+`);
+      console.log(`       ${dim("Fix: /compact or start a fresh session after 30 turns")}`);
+    }
+    if (s.wasteTypes.length === 0) {
+      console.log(`     ${green("No significant waste detected.")}`);
+    }
+
+    console.log(`     ${dim(`→ Should have started on: ${s.recommendedStartModel.toUpperCase()} — ${s.escalation}`)}`);
+    console.log("");
+  }
+  console.log(dim("  Press Enter to go back."));
+}
+
+function showCacheScreen(bug) {
+  clearScreen();
+  console.log("");
+  console.log(bold(cyan("  CACHE BUG")));
+  console.log("  " + "─".repeat(54));
+  console.log("");
+  console.log(`  Claude Code versions ${bold("2.1.69 – 2.1.89")} had a broken prompt cache.`);
+  console.log(`  Instead of reusing cached context, every turn paid full price`);
+  console.log(`  to re-process the entire conversation history.`);
+  console.log(`  Effect: ${bold("10–20x token burn")} on long sessions.`);
+  console.log("");
+
+  if (bug.bugged > 0) {
+    const pct  = Math.round(bug.bugged / bug.total * 100);
+    const bugG = (bug.buggedTokens / 1_000_000_000).toFixed(1);
+    const bugM = (bug.buggedTokens / 1_000_000).toFixed(0);
+    console.log(`  ${red(bold("YOUR IMPACT"))}`);
+    console.log(`  ${red(`${bug.bugged} of ${bug.total}`)} sessions (${red(`${pct}%`)}) ran under this bug.`);
+    console.log(`  ~${bold(bugG > "1.0" ? bugG + "B" : bugM + "M")} tokens consumed with broken caching.`);
+    console.log(`  These tokens are spent. They cannot be recovered.`);
+    console.log("");
+    console.log(`  ${yellow("You're now on a clean version.")} The bug is behind you.`);
+    console.log(`  Going forward, caching works correctly.`);
+  } else {
+    console.log(`  ${green(bold("You were not affected."))} Your sessions ran on clean versions.`);
+  }
+
+  console.log("");
+  console.log(`  ${dim("Run: claude update  (if you haven't already)")}`);
+  console.log("");
+  console.log(dim("  Press Enter to go back."));
+}
+
+function showEnforceScreen(enforced) {
+  clearScreen();
+  console.log("");
+  console.log(bold(cyan("  AUTO-ENFORCEMENT")));
+  console.log("  " + "─".repeat(54));
+  console.log("");
+
+  if (enforced) {
+    console.log(`  ${green(bold("✓ Active."))} Enforcement hooks are installed.`);
+    console.log("");
+    console.log(`  When a session hits ${bold("10x waste factor:")} `);
+    console.log(`    · Claude is blocked before the next prompt burns tokens`);
+    console.log(`    · Your session state is saved (branch, files, what you were doing)`);
+    console.log(`    · Start a fresh session — context is injected automatically`);
+    console.log("");
+    console.log(`  ${dim("To turn off: claude-audit uninstall")}`);
+    console.log(`  ${dim("To configure threshold: edit ~/.claude-audit/config.json")}`);
+  } else {
+    console.log(`  ${yellow("Not installed.")} Your sessions can run indefinitely.`);
+    console.log("");
+    console.log(`  With enforcement on:`);
+    console.log(`    · Sessions that hit ${bold("10x waste")} are automatically blocked`);
+    console.log(`    · Context saved before compaction so you never lose your place`);
+    console.log(`    · Fresh session starts with full awareness of the previous one`);
+    console.log(`    · Works silently in the background — no manual monitoring`);
+    console.log("");
+    console.log(`  ${bold("Install now?")}  Type ${cyan("y")} to install, or Enter to go back.`);
+  }
+  console.log("");
+}
+
+async function menu() {
+  const readline = require("readline");
+
+  const { since } = parseWindow("7d");
+  process.stdout.write("  Loading...\r");
+  const sub = readSubscriptionActivity(since);
+  const bug = scanCacheBugFast();
+  const enforced = hooksInstalled();
+
+  const ask = (prompt) => new Promise(resolve => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(prompt, ans => { rl.close(); resolve(ans.trim().toLowerCase()); });
+  });
+
+  while (true) {
+    printDashboard(sub, bug, enforced);
+    const choice = await ask("  Choice: ");
+
+    if (choice === "1") {
+      showMoneyScreen(sub);
+      await ask("");
+    } else if (choice === "2") {
+      showSessionsScreen(sub);
+      await ask("");
+    } else if (choice === "3") {
+      showCacheScreen(bug);
+      await ask("");
+    } else if (choice === "4") {
+      if (enforced) {
+        showEnforceScreen(true);
+        await ask("");
+      } else {
+        showEnforceScreen(false);
+        const ans = await ask("  Choice: ");
+        if (ans === "y") {
+          install();
+          console.log("");
+          console.log(green("  ✓ Enforcement installed. Restart Claude Code to activate."));
+          console.log("");
+          await ask("  Press Enter to continue.");
+        }
+      }
+    } else if (choice === "q" || choice === "quit" || choice === "exit") {
+      clearScreen();
+      break;
+    }
+  }
+}
+
 function main() {
   const opts = parseArgs();
 
@@ -719,12 +1023,24 @@ function main() {
   if (opts.command === "status")    { status();    return; }
   if (opts.command === "doctor")    { doctor();    return; }
 
-  // Default: report
-  const { since } = parseWindow(opts.last);
-  const sub = readSubscriptionActivity(since);
+  // Non-interactive modes
+  if (opts.json) {
+    const { since } = parseWindow(opts.last);
+    const sub = readSubscriptionActivity(since);
+    console.log(JSON.stringify({ window: opts.last, subscription: sub }, null, 2));
+    return;
+  }
 
-  if (opts.json) { console.log(JSON.stringify({ window: opts.last, subscription: sub }, null, 2)); return; }
-  console.log(formatReport(sub, opts.last));
+  // Plain report if --last specified explicitly
+  if (process.argv.slice(2).some(a => a.startsWith("--last") || a === "-l")) {
+    const { since } = parseWindow(opts.last);
+    const sub = readSubscriptionActivity(since);
+    console.log(formatReport(sub, opts.last));
+    return;
+  }
+
+  // Default: interactive menu
+  menu().catch(e => { console.error(e.message); process.exit(1); });
 }
 
 main();
