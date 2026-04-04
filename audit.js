@@ -658,13 +658,49 @@ function formatReport(sub, window) {
   }
 
   lines.push(hr());
-  lines.push("  HOW TO ACT");
+  lines.push("  WHAT TO DO  (based on your actual data)");
   lines.push(hr());
-  lines.push("  1. Start exploratory sessions on Haiku:  /model haiku");
-  lines.push("  2. Switch to Sonnet when complexity arrives (see turn # above)");
-  lines.push("  3. Use /compact before 30 turns to reset context");
-  lines.push("  4. Run `claude-audit install` to enforce this automatically");
-  lines.push("");
+  const wa2 = sub.wasteAnalysis || [];
+  const hasWrongModel   = wa2.some(s => s.wasteTypes.includes("wrong_model"));
+  const hasBloat        = wa2.some(s => s.wasteTypes.includes("session_bloat"));
+  const hasReplay       = wa2.some(s => s.wasteTypes.includes("context_replay"));
+  const enforced2       = hooksInstalled();
+  const topBloatPct     = wa2.filter(s=>s.wasteTypes.includes("session_bloat")).reduce((m,s)=>Math.max(m,s.ackPct),0);
+  const topReplayH      = wa2.filter(s=>s.wasteTypes.includes("context_replay")).reduce((m,s)=>Math.max(m,s.durationHrs),0);
+  const worstModel      = wa2.find(s=>s.wasteTypes.includes("wrong_model"));
+  let step = 1;
+  if (hasWrongModel) {
+    lines.push(`  ${step++}. Your biggest sessions ran ${model} on ${worstModel.haikuPct}% Haiku-eligible prompts.`);
+    lines.push(`     Start those sessions with /model haiku.`);
+    lines.push(`     Switch to sonnet only when you hit real complexity.`);
+    lines.push("");
+  }
+  if (hasBloat) {
+    lines.push(`  ${step++}. ${topBloatPct}% of your turns were one-word confirmations.`);
+    lines.push(`     Each "ok" re-sent your full context. Batch your intent instead —`);
+    lines.push(`     combine what would be 3 turns into 1.`);
+    lines.push("");
+  }
+  if (hasReplay) {
+    lines.push(`  ${step++}. Your longest session ran ${topReplayH}h. By turn 30 context costs`);
+    lines.push(`     10-20x more per prompt than when it started.`);
+    lines.push(`     Use /compact or start a fresh session after ~30 turns.`);
+    lines.push("");
+  }
+  if (!enforced2) {
+    lines.push(`  ${step++}. Run claude-audit install to enforce this automatically.`);
+    lines.push(`     Sessions get blocked at 10x waste. Context saved. Injected on resume.`);
+    lines.push("");
+  } else {
+    lines.push(`  ${step++}. Enforcement is ON. Sessions will be blocked at 10x waste.`);
+    lines.push(`     Config: ~/.claude-audit/config.json`);
+    lines.push("");
+  }
+  if (!hasWrongModel && !hasBloat && !hasReplay) {
+    lines.push("  No significant waste patterns detected in this window.");
+    lines.push("  Your sessions look clean.");
+    lines.push("");
+  }
   lines.push("  entient.ai — routes each prompt to the right model, deflects repeats");
   lines.push("");
   lines.push(hr("="));
@@ -1138,27 +1174,23 @@ ${bug.bugged > 0 ? `
   </table>
 </div>
 
-<div class="section">
-  <div class="section-title">What to do</div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-    <div>
-      <div style="font-weight:600;margin-bottom:6px;color:#58a6ff">1. Use the right model</div>
-      <div style="font-size:13px;color:#8b949e;line-height:1.6">Start exploratory sessions on Haiku (<code style="color:#79c0ff">/model haiku</code>). Switch to Sonnet only when real complexity arrives.</div>
-    </div>
-    <div>
-      <div style="font-weight:600;margin-bottom:6px;color:#58a6ff">2. Stop confirmation loops</div>
-      <div style="font-size:13px;color:#8b949e;line-height:1.6">Batch your intent. Instead of "ok → proceed → go ahead", say what you want in a single prompt.</div>
-    </div>
-    <div>
-      <div style="font-weight:600;margin-bottom:6px;color:#58a6ff">3. Rotate sessions</div>
-      <div style="font-size:13px;color:#8b949e;line-height:1.6">After 30 turns, use <code style="color:#79c0ff">/compact</code> or start fresh. Context cost grows linearly — a fresh session resets it to near zero.</div>
-    </div>
-    <div>
-      <div style="font-weight:600;margin-bottom:6px;color:#58a6ff">4. Enable auto-enforcement</div>
-      <div style="font-size:13px;color:#8b949e;line-height:1.6">Run <code style="color:#79c0ff">claude-audit install</code> to block sessions at 10x waste automatically. Context is saved and injected on resume.</div>
-    </div>
-  </div>
-</div>
+${(() => {
+  const wa3 = sub.available ? (sub.wasteAnalysis || []) : [];
+  const hasWM  = wa3.some(s => s.wasteTypes.includes("wrong_model"));
+  const hasBl  = wa3.some(s => s.wasteTypes.includes("session_bloat"));
+  const hasRep = wa3.some(s => s.wasteTypes.includes("context_replay"));
+  const topBl  = wa3.filter(s=>s.wasteTypes.includes("session_bloat")).reduce((m,s)=>Math.max(m,s.ackPct),0);
+  const topRH  = wa3.filter(s=>s.wasteTypes.includes("context_replay")).reduce((m,s)=>Math.max(m,s.durationHrs),0);
+  const wm     = wa3.find(s=>s.wasteTypes.includes("wrong_model"));
+  const items  = [];
+  if (hasWM)  items.push({ title: `Switch to Haiku for ${wm.haikuPct}% of your work`, body: `Your sessions ran ${model} on prompts that didn't need it. Start with <code style="color:#79c0ff">/model haiku</code>. Escalate to Sonnet only when the task gets complex.` });
+  if (hasBl)  items.push({ title: `Stop the confirmation loop (${topBl}% of your turns)`, body: `"ok", "proceed", "continue" — each one re-sent your full context at full price. Batch your intent. Say what you want in one prompt instead of three.` });
+  if (hasRep) items.push({ title: `Rotate sessions after 30 turns (you ran ${topRH}h)`, body: `Context cost compounds. By turn 30+, you're paying 10-20x more per prompt just to carry history. Use <code style="color:#79c0ff">/compact</code> or start fresh and paste a one-paragraph summary.` });
+  if (!enforced) items.push({ title: "Enable auto-enforcement", body: `Run <code style="color:#79c0ff">claude-audit install</code> to block sessions at 10x waste automatically. Context is saved before each block and injected when you resume.` });
+  if (items.length === 0) items.push({ title: "Looking clean", body: "No significant waste patterns in this window. Keep sessions short, match the model to the work." });
+  const cols = items.map(item => `<div><div style="font-weight:600;margin-bottom:6px;color:#58a6ff">${item.title}</div><div style="font-size:13px;color:#8b949e;line-height:1.6">${item.body}</div></div>`).join("");
+  return `<div class="section"><div class="section-title">What to do — based on your data</div><div style="display:grid;grid-template-columns:${items.length > 1 ? "1fr 1fr" : "1fr"};gap:16px">${cols}</div></div>`;
+})()}
 
 <div class="cta">
   <div class="cta-title">Want this enforced automatically?</div>
