@@ -357,14 +357,31 @@ function triggerRestart(w) {
   }), "utf8");
 
   // Kill the claude process so the loop wrapper detects the exit and relaunches.
-  // We walk up the parent-process chain: hook -> shell -> claude.
-  // On Windows we use taskkill; on Unix we send SIGTERM to the process group.
+  // Process chain when running via claude-loop.ps1:
+  //   PowerShell (claude-loop) -> cmd.exe -> node.exe (claude) -> [hook shell] -> node.exe (this hook)
+  // Claude Code spawns hooks via a shell intermediary on Windows, so process.ppid is that
+  // intermediate shell, not the Claude Code node.exe itself.  We walk up to the grandparent.
   try {
     const { execSync } = require("child_process");
     if (process.platform === "win32") {
-      // Kill our direct parent PID — that's the node.exe process running claude.
-      // More targeted than killing by image name (which would kill all node instances).
-      execSync(`taskkill /F /PID ${process.ppid}`, { stdio: "ignore" });
+      // Try ppid first (works if Claude Code spawns hooks directly without a shell).
+      // If ppid is cmd.exe/powershell.exe, also kill its parent to reach the claude node.exe.
+      const ppid = process.ppid;
+      execSync(`taskkill /F /PID ${ppid}`, { stdio: "ignore" });
+      try {
+        // Walk one level higher: get the parent of ppid via WMIC.
+        const out = execSync(
+          `wmic process where processid=${ppid} get parentprocessid /format:value`,
+          { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+        );
+        const m = out.match(/ParentProcessId=(\d+)/i);
+        if (m) {
+          const grandpid = parseInt(m[1], 10);
+          if (grandpid > 4) {   // skip PID 4 (System) and 0
+            execSync(`taskkill /F /PID ${grandpid}`, { stdio: "ignore" });
+          }
+        }
+      } catch (_) { /* grandparent walk failed, ppid kill was enough */ }
     } else {
       // POSIX: SIGTERM to our direct parent (claude's node process)
       process.kill(process.ppid, "SIGTERM");
