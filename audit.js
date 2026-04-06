@@ -33,6 +33,7 @@ const os   = require("os");
 
 const AUDIT_DIR       = path.join(os.homedir(), ".claude-audit");
 const LAST_SESSION    = path.join(AUDIT_DIR, "last-session.md");
+const RESTART_FLAG    = path.join(AUDIT_DIR, "restart-flag");   // watched by claude-loop
 const CONFIG_FILE     = path.join(AUDIT_DIR, "config.json");
 const CLAUDE_SETTINGS = path.join(os.homedir(), ".claude", "settings.json");
 const CLAUDE_HISTORY  = path.join(os.homedir(), ".claude", "history.jsonl");
@@ -346,6 +347,33 @@ function currentSessionFile() {
 
 // ── Hook handlers ────────────────────────────────────────────────────────────
 
+function triggerRestart(w) {
+  // Write restart flag for claude-loop to detect
+  ensureAuditDir();
+  fs.writeFileSync(RESTART_FLAG, JSON.stringify({
+    triggeredAt: new Date().toISOString(),
+    factor: w ? w.factor : 0,
+    turns:  w ? w.turns  : 0,
+  }), "utf8");
+
+  // Kill the claude process so the loop wrapper detects the exit and relaunches.
+  // We walk up the parent-process chain: hook -> shell -> claude.
+  // On Windows we use taskkill; on Unix we send SIGTERM to the process group.
+  try {
+    const { execSync } = require("child_process");
+    if (process.platform === "win32") {
+      // Kill our direct parent PID — that's the node.exe process running claude.
+      // More targeted than killing by image name (which would kill all node instances).
+      execSync(`taskkill /F /PID ${process.ppid}`, { stdio: "ignore" });
+    } else {
+      // POSIX: SIGTERM to our direct parent (claude's node process)
+      process.kill(process.ppid, "SIGTERM");
+    }
+  } catch (_) {
+    // Fail silently — worst case the user sees the block message and types `exit`
+  }
+}
+
 function hookPrompt() {
   const cfg  = loadConfig();
   const file = currentSessionFile();
@@ -357,16 +385,20 @@ function hookPrompt() {
   // Save context before blocking
   saveSessionContext(file, w);
 
+  const autoRestart = !!process.env.CLAUDE_AUDIT_AUTORESTART;
+
   const msg = [
-    `╔${"═".repeat(60)}╗`,
-    `║  claude-audit: Session using ${w.factor}x more quota than start  `.padEnd(62) + "║",
-    `╚${"═".repeat(60)}╝`,
+    `+${"-".repeat(60)}+`,
+    `|  claude-audit: Session using ${w.factor}x more quota than start  `.padEnd(62) + "|",
+    `+${"-".repeat(60)}+`,
     ``,
     `Your turns started at ~${w.baseline.toLocaleString()} tokens.`,
     `They're now at ~${w.current.toLocaleString()} tokens (${w.factor}x more per turn).`,
     `After ${w.turns} turns, each prompt costs ${w.factor}x what it did at session start.`,
     ``,
-    `Session context saved. Start fresh: run \`claude\``,
+    autoRestart
+      ? `Auto-restart is ON. Rotating session now...`
+      : `Session context saved. Start fresh: run \`claude\``,
     `claude-audit will inject your previous context automatically.`,
     ``,
     `To continue anyway: set CLAUDE_AUDIT_SKIP=1 in your environment.`,
@@ -374,8 +406,14 @@ function hookPrompt() {
 
   if (process.env.CLAUDE_AUDIT_SKIP) { process.exit(0); }
 
-  // Output block decision
+  // Output block decision first (so claude sees it before we kill the process)
   process.stdout.write(JSON.stringify({ decision: "block", reason: msg }) + "\n");
+
+  // Auto-restart: write flag + kill claude so the loop wrapper relaunches it
+  if (autoRestart) {
+    triggerRestart(w);
+  }
+
   process.exit(0);
 }
 
@@ -389,10 +427,15 @@ function hookTool() {
 
   saveSessionContext(file, w);
 
+  const autoRestart = !!process.env.CLAUDE_AUDIT_AUTORESTART;
+
   process.stderr.write(
     `[claude-audit] Session at ${w.factor}x waste (${w.turns} turns). ` +
-    `Start fresh: run \`claude\`. Context saved to ${LAST_SESSION}\n`
+    (autoRestart ? `Auto-restarting...\n` : `Start fresh: run \`claude\`. Context saved to ${LAST_SESSION}\n`)
   );
+
+  if (autoRestart) triggerRestart(w);
+
   process.exit(2);  // exit code 2 = blocking error for PostToolUse
 }
 
@@ -531,6 +574,98 @@ function install() {
   } else {
     console.log("\n✓ Already installed.");
   }
+}
+
+function installAutorestart() {
+  // 1. Install base hooks (idempotent)
+  install();
+
+  // 2. Patch hooks to include CLAUDE_AUDIT_AUTORESTART=1 in the env
+  let settings = {};
+  if (fs.existsSync(CLAUDE_SETTINGS)) {
+    try { settings = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS, "utf8")); } catch (_) {}
+  }
+  if (!settings.hooks) { console.log("  Base hooks not found. Run claude-audit install first."); return; }
+
+  let patched = 0, alreadyPatched = 0;
+  for (const event of ["UserPromptSubmit", "PostToolUse"]) {
+    const hooks = settings.hooks[event] || [];
+    for (const group of hooks) {
+      for (const h of (group.hooks || [])) {
+        if ((h.command || "").includes("claude-audit")) {
+          if (!h.env || !h.env.CLAUDE_AUDIT_AUTORESTART) {
+            h.env = { ...(h.env || {}), CLAUDE_AUDIT_AUTORESTART: "1" };
+            patched++;
+          } else {
+            alreadyPatched++;
+          }
+        }
+      }
+    }
+  }
+  fs.writeFileSync(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2), "utf8");
+
+  // 3. Write the loop script next to this file
+  const loopScript = _claudeLoopScript();
+  const loopPath   = path.join(path.dirname(path.resolve(__filename)), "claude-loop.ps1");
+  fs.writeFileSync(loopPath, loopScript, "utf8");
+
+  const patchNote = patched > 0
+    ? `${patched} hooks patched`
+    : `hooks already configured (${alreadyPatched} with AUTORESTART=1)`;
+  console.log(`\n✓ Auto-restart enabled (${patchNote})`);
+  console.log(`  Loop script: ${loopPath}`);
+  console.log(`\n  USAGE:`);
+  console.log(`    powershell -ExecutionPolicy Bypass -File "${loopPath}"`);
+  console.log(`\n  Run that instead of 'claude'.`);
+  console.log(`  When a session hits ${DEFAULTS.threshold}x waste, it will rotate automatically.`);
+  console.log(`  Context is saved and injected into the fresh session.`);
+  console.log(`\n  To revert: claude-audit uninstall`);
+}
+
+function _claudeLoopScript() {
+  // PowerShell loop wrapper — runs claude inline (proper TTY, no Start-Process).
+  // claude is an npm .cmd shim; cmd /c resolves it correctly and inherits the console.
+  // The hook kills its parent node PID and writes the restart-flag.
+  // When claude exits, check flag and relaunch.
+  return String.raw`# claude-loop.ps1 -- generated by claude-audit install-autorestart
+# Run this instead of 'claude'. Sessions rotate automatically when waste hits threshold.
+# Usage: .\claude-loop.ps1
+
+$flagPath    = Join-Path $HOME ".claude-audit\restart-flag"
+$maxRestarts = 50
+$restarts    = 0
+
+if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
+    Write-Host "[claude-loop] ERROR: 'claude' not found in PATH." -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "[claude-loop] Starting. Auto-restart ON." -ForegroundColor Cyan
+Write-Host "[claude-loop] Sessions rotate at waste threshold. Context injected on each start." -ForegroundColor DarkCyan
+Write-Host ""
+
+while ($restarts -lt $maxRestarts) {
+    # cmd /c handles .cmd shims and inherits the current console (proper interactive TUI)
+    cmd /c claude
+
+    if (Test-Path $flagPath) {
+        Remove-Item $flagPath -Force -ErrorAction SilentlyContinue
+        $restarts++
+        Write-Host ""
+        Write-Host "[claude-loop] Session rotated ($restarts/$maxRestarts). Restarting..." -ForegroundColor Cyan
+        Start-Sleep -Milliseconds 800
+    } else {
+        Write-Host ""
+        Write-Host "[claude-loop] Session ended normally." -ForegroundColor Green
+        break
+    }
+}
+
+if ($restarts -ge $maxRestarts) {
+    Write-Host "[claude-loop] Safety ceiling reached ($maxRestarts restarts). Exiting." -ForegroundColor Yellow
+}
+`;
 }
 
 function uninstall() {
@@ -762,6 +897,7 @@ function computeTokenBilling(since) {
       const sid = fname.replace(".jsonl", "");
       let sidCost = 0, sidInp = 0, sidOut = 0, sidCC = 0, sidCR = 0;
       let sidDate = null, sidTs = 0, turns = 0;
+      let firstTurnInput = 0, lastTurnInput = 0;
 
       // Use file mtime as the date anchor — most reliable for session files
       const fileMtime = fs.statSync(fpath).mtimeMs;
@@ -792,7 +928,14 @@ function computeTokenBilling(since) {
           const cost  = tokCost(p, inp, out, cc, cr);
 
           sidCost += cost; sidInp += inp; sidOut += out; sidCC += cc; sidCR += cr;
-          if (inp || out) turns++;
+          if (inp || out || cc || cr) {
+            turns++;
+            // Track startup (first turn) and last turn total input for overhead computation
+            // Total input = new tokens + cache_creation + cache_read (all paid on this turn)
+            const totalInp = inp + cc + cr;
+            if (turns === 1 && totalInp > 0) firstTurnInput = totalInp;
+            if (totalInp > 0) lastTurnInput = totalInp;
+          }
         }
       } catch (_) { continue; }
 
@@ -813,7 +956,7 @@ function computeTokenBilling(since) {
       byProject[projName].sessions += 1;
       byProject[projName].tokens   += sidInp + sidOut + sidCC + sidCR;
 
-      bySid[sid] = { project: projName, date: sidDate, cost: sidCost, inp: sidInp, out: sidOut, turns };
+      bySid[sid] = { project: projName, date: sidDate, cost: sidCost, inp: sidInp, out: sidOut, turns, firstTurnInput, lastTurnInput };
     }
   }
 
@@ -822,7 +965,43 @@ function computeTokenBilling(since) {
   const totalCost   = days.reduce((s, d) => s + d.cost, 0);
   const totalTokens = days.reduce((s, d) => s + d.inp + d.out + d.cc + d.cr, 0);
 
-  return { ok: true, days, projects, sessions: bySid, totalCost, totalTokens };
+  // ── Startup overhead stats ───────────────────────────────────────────────
+  // firstTurnInput = system prompt + tools + first message — the minimum you pay per session
+  // avgGrowthPerTurn = (lastTurnInput - firstTurnInput) / (turns - 1) ≈ size of each new exchange
+  // toolOverhead = firstTurnInput - avgGrowthPerTurn (excess over a single "blank" turn)
+  const sidArr = Object.values(bySid).filter(s => s.turns >= 2 && s.firstTurnInput > 0);
+  let startupStats = null;
+  if (sidArr.length > 0) {
+    const firstTurns = sidArr.map(s => s.firstTurnInput);
+    const avgFirstTurn = Math.round(avg(firstTurns));
+    const growths = sidArr
+      .filter(s => s.turns > 1 && s.lastTurnInput > s.firstTurnInput)
+      .map(s => (s.lastTurnInput - s.firstTurnInput) / (s.turns - 1));
+    const avgGrowthPerTurn = growths.length ? Math.round(avg(growths)) : 0;
+    // Overhead = first-turn cost minus what a single exchange would cost
+    const overheadPerSession = Math.max(0, avgFirstTurn - avgGrowthPerTurn);
+    const totalStartupTokens = firstTurns.reduce((a, b) => a + b, 0);
+    const totalOverheadTokens = sidArr.reduce((sum, s) => {
+      const growth = (s.turns > 1 && s.lastTurnInput > s.firstTurnInput)
+        ? (s.lastTurnInput - s.firstTurnInput) / (s.turns - 1) : 0;
+      return sum + Math.max(0, s.firstTurnInput - growth);
+    }, 0);
+    // Cost of startup overhead at Sonnet rates (most common model)
+    const overheadCost = totalOverheadTokens / 1e6 * TOKEN_PRICES.sonnet.in;
+    startupStats = {
+      sessions: sidArr.length,
+      avgFirstTurn,
+      avgGrowthPerTurn,
+      overheadPerSession: Math.round(overheadPerSession),
+      totalStartupTokens: Math.round(totalStartupTokens),
+      totalOverheadTokens: Math.round(totalOverheadTokens),
+      overheadCost,
+      // Flag if overhead is meaningful (>3k tokens per session = significant tool loading)
+      significant: overheadPerSession > 3000,
+    };
+  }
+
+  return { ok: true, days, projects, sessions: bySid, totalCost, totalTokens, startupStats };
 }
 
 // ── Doctor — version/cache bug check ────────────────────────────────────────
@@ -1064,12 +1243,13 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const opts = { last: "7d", json: false, report: false, command: null, hook: null };
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "install")        { opts.command = "install";   }
-    else if (args[i] === "uninstall") { opts.command = "uninstall"; }
-    else if (args[i] === "status")    { opts.command = "status";    }
-    else if (args[i] === "doctor")    { opts.command = "doctor";    }
-    else if (args[i] === "setup")     { opts.command = "setup";     }
-    else if (args[i] === "billing")    { opts.command = "billing";    }
+    if (args[i] === "install")               { opts.command = "install";           }
+    else if (args[i] === "install-autorestart") { opts.command = "install-autorestart"; }
+    else if (args[i] === "uninstall")        { opts.command = "uninstall";         }
+    else if (args[i] === "status")           { opts.command = "status";            }
+    else if (args[i] === "doctor")           { opts.command = "doctor";            }
+    else if (args[i] === "setup")            { opts.command = "setup";             }
+    else if (args[i] === "billing")          { opts.command = "billing";           }
     else if (args[i] === "reconcile") { opts.command = "reconcile"; opts.reconcileFile = args[i+1] && !args[i+1].startsWith("--") ? args[++i] : null; }
     else if (args[i] === "--hook" && args[i + 1]) { opts.hook = args[++i]; }
     else if ((args[i] === "--last" || args[i] === "-l") && args[i + 1]) opts.last = args[++i];
@@ -1204,7 +1384,7 @@ function printDashboard(sub, bug, enforced, window, billing) {
 
   const hasBilling = billing && billing.ok && billing.totalCost > 0;
   const realSpend  = hasBilling ? billing.totalCost : 0;
-  const budget     = cfg.monthlyBudget || null;
+  const budget     = (billing && billing.budget) || null;
 
   console.log("");
   console.log(bold(`  ENTIENT / claude-audit`) + dim(`  —  last ${label}`));
@@ -1253,6 +1433,22 @@ function printDashboard(sub, bug, enforced, window, billing) {
   } else {
     console.log(`  ${dim("Token-based cost estimate loading from session files...")}`);
     console.log("")
+  }
+
+  // ── Startup overhead ─────────────────────────────────────────
+  const ss = billing && billing.startupStats;
+  if (ss && ss.sessions > 0 && ss.significant) {
+    const overheadK  = (ss.overheadPerSession / 1000).toFixed(0);
+    const totalK     = (ss.totalOverheadTokens / 1000).toFixed(0);
+    const costStr    = ss.overheadCost >= 0.01 ? ` = ${yl("$" + ss.overheadCost.toFixed(2))} overhead` : "";
+    console.log(`  ${SL}`);
+    console.log(`  STARTUP OVERHEAD  ${dim("(tool + system prompt loading per session)")}`);
+    console.log(`  ${SL}`);
+    console.log(`  Each new session loads ~${yl(overheadK + "k")} tokens of tools/system prompt before you type a word.`);
+    console.log(`  Across ${ss.sessions} sessions: ${yl(totalK + "k")} tokens burned on startup${costStr}.`);
+    console.log(`  ${dim('This is the "loaded tools" problem — re-injected cold every session.')}`);
+    console.log(`  ${dim("entient.ai collapses repeated tool loading to near-zero after the first run.")}`);
+    console.log("");
   }
 
   // ── Prompt breakdown ─────────────────────────────────────────
@@ -1867,6 +2063,21 @@ function billingReport(windowStr = "30d") {
   }
   console.log("");
 
+  // ── Startup overhead ────────────────────────────────────────
+  const ss2 = b.startupStats;
+  if (ss2 && ss2.sessions > 0 && ss2.significant) {
+    const overheadK = (ss2.overheadPerSession / 1000).toFixed(0);
+    const totalK    = (ss2.totalOverheadTokens / 1000).toFixed(0);
+    console.log(`  ${SL}`);
+    console.log(`  STARTUP OVERHEAD  ${dim("(system prompt + tool definitions per session)")}`);
+    console.log(`  ${SL}`);
+    console.log(`  Sessions analyzed        ${ss2.sessions}`);
+    console.log(`  Avg startup cost         ~${yl(overheadK + "k")} tokens/session  ${dim("(before first prompt)")}`);
+    console.log(`  Total startup tokens     ~${yl(totalK + "k")} tokens  ${dim("= $" + ss2.overheadCost.toFixed(2) + " at Sonnet rates")}`);
+    console.log(`  ${dim("Fix: entient.ai collapses tool loading — first run witnesses it, every run after is free.")}`);
+    console.log("");
+  }
+
   console.log(`  ${SL}`);
   console.log(`  HOW TO READ THIS`);
   console.log(`  ${SL}`);
@@ -2070,8 +2281,9 @@ function main() {
   if (opts.hook === "start")   { hookStart();   return; }
 
   // Management commands
-  if (opts.command === "install")   { install();   return; }
-  if (opts.command === "uninstall") { uninstall(); return; }
+  if (opts.command === "install")            { install();            return; }
+  if (opts.command === "install-autorestart") { installAutorestart(); return; }
+  if (opts.command === "uninstall")          { uninstall();          return; }
   if (opts.command === "status")    { status();    return; }
   if (opts.command === "doctor")    { doctor();    return; }
   if (opts.command === "setup")     { setup();     return; }
@@ -2081,8 +2293,9 @@ function main() {
   // Non-interactive modes
   if (opts.json) {
     const { since } = parseWindow(opts.last);
-    const sub = readSubscriptionActivity(since);
-    console.log(JSON.stringify({ window: opts.last, subscription: sub }, null, 2));
+    const sub     = readSubscriptionActivity(since);
+    const billing = computeTokenBilling(since);
+    console.log(JSON.stringify({ window: opts.last, subscription: sub, startupStats: billing.startupStats || null }, null, 2));
     return;
   }
 
