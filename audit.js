@@ -9,7 +9,8 @@
  * Usage:
  *   claude-audit                        # waste report (last 7d)
  *   claude-audit --last 30d
- *   claude-audit install                # register enforcement hooks
+ *   claude-audit install                # register enforcement hooks (blocks at 10x waste)
+ *   claude-audit install --shadow       # register hooks in observe-only mode (warn, never block)
  *   claude-audit uninstall              # remove hooks
  *   claude-audit status                 # show hook status + current waste factor
  *   claude-audit --json                 # machine-readable report
@@ -45,6 +46,7 @@ const DEFAULTS = {
   minTurns:      20,   // minimum turns before enforcing
   baselineTurns:  5,   // turns used to establish baseline
   windowTurns:    5,   // turns used for current average
+  mode:      "enforce", // "enforce" = block at threshold | "shadow" = warn only, never block
 };
 
 function loadConfig() {
@@ -465,6 +467,15 @@ function hookPrompt() {
 
   if (!w.blocked) { process.exit(0); }
 
+  // Shadow mode: warn but never block
+  if (cfg.mode === "shadow") {
+    process.stderr.write(
+      `[claude-audit] SHADOW: session at ${w.factor}x waste after ${w.turns} turns` +
+      ` (enforce threshold: ${cfg.threshold}x). Observing only.\n`
+    );
+    process.exit(0);
+  }
+
   // Save context before blocking
   saveSessionContext(file, w);
 
@@ -507,6 +518,15 @@ function hookTool() {
 
   const w = computeWasteFactor(file, cfg);
   if (!w || !w.blocked) { process.exit(0); }
+
+  // Shadow mode: warn but never block
+  if (cfg.mode === "shadow") {
+    process.stderr.write(
+      `[claude-audit] SHADOW: session at ${w.factor}x waste after ${w.turns} turns` +
+      ` (enforce threshold: ${cfg.threshold}x). Observing only.\n`
+    );
+    process.exit(0);
+  }
 
   saveSessionContext(file, w);
 
@@ -751,6 +771,18 @@ if ($restarts -ge $maxRestarts) {
 `;
 }
 
+function installShadow() {
+  // 1. Install base hooks (idempotent)
+  install();
+
+  // 2. Write mode: shadow to config
+  const cfg = saveConfig({ mode: "shadow" });
+  console.log(`\n  Shadow mode ON.`);
+  console.log(`  Hooks will warn (stderr) when waste threshold is exceeded, but will NOT block.`);
+  console.log(`  To upgrade to full enforcement: claude-audit install`);
+  console.log(`  Config: ${CONFIG_FILE}  (mode: "${cfg.mode}", threshold: ${cfg.threshold}x)`);
+}
+
 function uninstall() {
   if (!fs.existsSync(CLAUDE_SETTINGS)) {
     console.log("No settings.json found.");
@@ -808,7 +840,10 @@ function status() {
     console.log(`\n  Saved context:   ${LAST_SESSION} (${age}min ago)`);
   }
 
-  console.log(`\n  ${hooksInstalled === 4 ? "✓ Fully installed" : `⚠ Run 'claude-audit install' to enable enforcement`}`);
+  const cfg = loadConfig();
+  const modeLabel = cfg.mode === "shadow" ? "shadow (warn only, no blocking)" : "enforce (blocks at threshold)";
+  console.log(`\n  Mode: ${modeLabel}`);
+  console.log(`  ${hooksInstalled === 4 ? "✓ Fully installed" : `⚠ Run 'claude-audit install' to enable enforcement`}`);
 }
 
 // ── Analytics (original report) ─────────────────────────────────────────────
@@ -1326,7 +1361,9 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const opts = { last: "7d", json: false, report: false, command: null, hook: null };
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "install")               { opts.command = "install";           }
+    if (args[i] === "install" && args[i+1] === "--shadow") { opts.command = "install-shadow"; i++; }
+    else if (args[i] === "install-shadow")   { opts.command = "install-shadow";    }
+    else if (args[i] === "install")               { opts.command = "install";           }
     else if (args[i] === "install-autorestart") { opts.command = "install-autorestart"; }
     else if (args[i] === "uninstall")        { opts.command = "uninstall";         }
     else if (args[i] === "status")           { opts.command = "status";            }
@@ -1340,7 +1377,9 @@ function parseArgs() {
     else if (args[i] === "--json")   opts.json = true;
     else if (args[i] === "--report") opts.report = true;
     else if (args[i] === "--help" || args[i] === "-h") {
-      console.log("Usage: claude-audit [install|uninstall|status] [--last 7d] [--json]");
+      console.log("Usage: claude-audit [install|install --shadow|uninstall|status] [--last 7d] [--json]");
+      console.log("  install --shadow   Install hooks in observe-only mode (warn, never block)");
+      console.log("  install            Install hooks in enforce mode (blocks at 10x waste)");
       process.exit(0);
     }
   }
@@ -2365,6 +2404,7 @@ function main() {
 
   // Management commands
   if (opts.command === "install")            { install();            return; }
+  if (opts.command === "install-shadow")     { installShadow();      return; }
   if (opts.command === "install-autorestart") { installAutorestart(); return; }
   if (opts.command === "uninstall")          { uninstall();          return; }
   if (opts.command === "status")    { status();    return; }
