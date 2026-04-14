@@ -30,6 +30,17 @@ const fs   = require("fs");
 const path = require("path");
 const os   = require("os");
 
+// ExecutionGate adapter — contract v1 consumer.  Lazy-loaded so a broken
+// Python/runtime install does not prevent `claude-audit` itself from running.
+let _gateAdapter = null;
+function gateAdapter() {
+  if (_gateAdapter === null) {
+    try { _gateAdapter = require("./gate_adapter.js"); }
+    catch (_) { _gateAdapter = false; }
+  }
+  return _gateAdapter || null;
+}
+
 // ── Config ──────────────────────────────────────────────────────────────────
 
 const AUDIT_DIR       = path.join(os.homedir(), ".claude-audit");
@@ -1512,6 +1523,166 @@ function formatReport(sub, window) {
 
 // ── CLI dispatch ─────────────────────────────────────────────────────────────
 
+// ── Redundancy analyzer — contract v1 consumer of ExecutionGate ─────────────
+//
+// Walks a session (or the last N days of sessions) and flags tool calls whose
+// (tool_name, canonical_input, context) coordinate has been seen before.  The
+// HIT/MISS decision is made by entient_agent.runtime.ExecutionGate via the
+// gate_cli shim — same verdict vocabulary as the Agent hook.
+//
+// This is an OFFLINE observer.  It does not block, it does not run in the
+// hot path.  It answers the question "which of my tool calls were wasted?"
+// using the same receipt gate as the rest of the ENTIENT runtime.
+
+function extractToolUses(sessionFile) {
+  // Returns [{ ts, toolName, toolInput, turnIndex }]
+  if (!fs.existsSync(sessionFile)) return [];
+  const uses = [];
+  let turnIndex = 0;
+  let sawUserThisTurn = false;
+  try {
+    const lines = fs.readFileSync(sessionFile, "utf8").split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let rec;
+      try { rec = JSON.parse(line); } catch (_) { continue; }
+      const role = rec.type || (rec.message && rec.message.role);
+      if (role === "user") {
+        if (sawUserThisTurn) turnIndex += 1;
+        sawUserThisTurn = true;
+      }
+      const content = rec.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (block && block.type === "tool_use") {
+          uses.push({
+            ts: rec.timestamp || rec.message?.timestamp || null,
+            toolName: block.name || "unknown",
+            toolInput: block.input || {},
+            turnIndex,
+          });
+        }
+      }
+    }
+  } catch (_) {}
+  return uses;
+}
+
+function readGitHead(dir) {
+  try {
+    const headPath = path.join(dir || process.cwd(), ".git", "HEAD");
+    if (!fs.existsSync(headPath)) return "";
+    const head = fs.readFileSync(headPath, "utf8").trim();
+    if (head.startsWith("ref: ")) {
+      const refPath = path.join(dir || process.cwd(), ".git", head.slice(5));
+      if (fs.existsSync(refPath)) {
+        return fs.readFileSync(refPath, "utf8").trim().slice(0, 12);
+      }
+      return head.slice(5).slice(-12);
+    }
+    return head.slice(0, 12);
+  } catch (_) { return ""; }
+}
+
+function redundancyReport(opts) {
+  const ga = gateAdapter();
+  if (!ga) {
+    console.log("[claude-audit] gate_adapter unavailable — is entient_agent importable by python?");
+    console.log("  Try: ENTIENT_PYTHON=/path/to/python claude-audit redundancy");
+    process.exit(3);
+  }
+
+  const sessionFile = opts.sessionFile || currentSessionFile();
+  if (!sessionFile || !fs.existsSync(sessionFile)) {
+    console.log("[claude-audit] no session file to analyze.");
+    console.log("  Pass one explicitly: claude-audit redundancy <session.jsonl>");
+    process.exit(2);
+  }
+
+  const uses = extractToolUses(sessionFile);
+  if (!uses.length) {
+    console.log(`[claude-audit] no tool uses found in ${sessionFile}`);
+    process.exit(0);
+  }
+
+  const context = opts.context || readGitHead(process.cwd()) || "no_git";
+  const results = [];
+  let hits = 0, misses = 0, stale = 0, errors = 0;
+
+  for (const u of uses) {
+    const ob = ga.obligationForToolUse(u.toolName, u.toolInput);
+    const decision = ga.gateCheck(ob, context);
+    const verdict = (decision.verdict || "ERROR").toUpperCase();
+    if (verdict === "HIT") hits += 1;
+    else if (verdict === "MISS") misses += 1;
+    else if (verdict === "STALE") stale += 1;
+    else errors += 1;
+
+    results.push({
+      turn: u.turnIndex,
+      ts: u.ts,
+      tool: u.toolName,
+      obligation: ob,
+      verdict,
+      reason: decision.reason,
+    });
+
+    // Record the receipt AFTER the check (contract I2: record after success).
+    // For an offline analysis this models "I saw this call happen."  A HIT on
+    // the next identical call is the redundancy signal.
+    if (!opts.noRecord && verdict !== "ERROR") {
+      ga.gateRecord(ob, u.toolName, context, { turn: u.turnIndex });
+    }
+  }
+
+  const total = results.length;
+  const redundantPct = total ? ((hits / total) * 100).toFixed(1) : "0.0";
+
+  if (opts.json) {
+    console.log(JSON.stringify({
+      session: sessionFile,
+      context,
+      total, hits, misses, stale, errors,
+      redundant_pct: parseFloat(redundantPct),
+      gate_space: ga.GATE_SPACE,
+      calls: opts.verbose ? results : results.filter(r => r.verdict === "HIT"),
+    }, null, 2));
+    return;
+  }
+
+  console.log(`\nRedundancy report — ${path.basename(sessionFile)}`);
+  console.log(`  Context:        ${context}`);
+  console.log(`  Gate space:     ${ga.GATE_SPACE}`);
+  console.log(`  Tool calls:     ${total}`);
+  console.log(`  HIT (redundant):${String(hits).padStart(5)}   ${redundantPct}%`);
+  console.log(`  MISS (novel):   ${String(misses).padStart(5)}`);
+  console.log(`  STALE:          ${String(stale).padStart(5)}`);
+  console.log(`  ERROR:          ${String(errors).padStart(5)}`);
+  if (hits > 0) {
+    console.log(`\n  Redundant calls (same HIT definition as ENTIENT hooks):`);
+    const seen = new Set();
+    for (const r of results) {
+      if (r.verdict !== "HIT") continue;
+      const key = r.tool + ":" + r.obligation.slice(0, 16);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      console.log(`    turn ${String(r.turn).padStart(3)}  ${r.tool.padEnd(12)} ${r.obligation.slice(0, 24)}...`);
+      if (seen.size >= 20) { console.log(`    ... (${hits - seen.size} more)`); break; }
+    }
+  }
+  console.log("");
+}
+
+function gateStatsCmd() {
+  const ga = gateAdapter();
+  if (!ga) {
+    console.log("[claude-audit] gate_adapter unavailable — python/entient_agent not importable.");
+    process.exit(3);
+  }
+  const s = ga.gateStats();
+  console.log(JSON.stringify(s, null, 2));
+}
+
 function parseArgs() {
   const args = process.argv.slice(2);
   const opts = { last: "7d", json: false, report: false, command: null, hook: null };
@@ -1527,6 +1698,14 @@ function parseArgs() {
     else if (args[i] === "setup")            { opts.command = "setup";             }
     else if (args[i] === "billing")          { opts.command = "billing";           }
     else if (args[i] === "reconcile") { opts.command = "reconcile"; opts.reconcileFile = args[i+1] && !args[i+1].startsWith("--") ? args[++i] : null; }
+    else if (args[i] === "redundancy") {
+      opts.command = "redundancy";
+      if (args[i+1] && !args[i+1].startsWith("--")) opts.sessionFile = args[++i];
+    }
+    else if (args[i] === "gate-stats") { opts.command = "gate-stats"; }
+    else if (args[i] === "--context" && args[i + 1]) { opts.context = args[++i]; }
+    else if (args[i] === "--no-record")     { opts.noRecord = true; }
+    else if (args[i] === "--verbose" || args[i] === "-v") { opts.verbose = true; }
     else if (args[i] === "--hook" && args[i + 1]) { opts.hook = args[++i]; }
     else if ((args[i] === "--last" || args[i] === "-l") && args[i + 1]) opts.last = args[++i];
     else if (args[i].startsWith("--last=")) opts.last = args[i].slice(7);
@@ -2569,6 +2748,8 @@ function main() {
   if (opts.command === "setup")     { setup();     return; }
   if (opts.command === "billing")    { billingReport(opts.last); return; }
   if (opts.command === "reconcile") { reconcile(opts.reconcileFile); return; }
+  if (opts.command === "redundancy") { redundancyReport(opts); return; }
+  if (opts.command === "gate-stats") { gateStatsCmd(); return; }
 
   // Non-interactive modes
   if (opts.json) {
