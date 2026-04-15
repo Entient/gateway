@@ -1,6 +1,6 @@
 {
   "name": "claude-audit",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "Claude Code session enforcer + waste analyzer. Blocks runaway sessions, saves context across compactions, auto-injects context on resume.",
   "bin": {
     "claude-audit": "./audit.js"

@@ -1,0 +1,7 @@
+# Exclude from npm package — not needed at runtime
+BILLING_RECONCILIATION_PLAN.md
+test_gate_adapter.js
+claude-loop.ps1
+.git
+.gitignore
+.github

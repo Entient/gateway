@@ -1,13 +1,26 @@
 # claude-audit
 
-**Claude Code session enforcer + waste analyzer.**
+**See which prompts didn't need the model you paid for.**
 
-Blocks sessions that are burning quota on bloated context. Saves your session state before compaction. Injects it back when you resume. Tells you where your subscription actually went.
+Most Claude Code quota is spent on the wrong model. `claude-audit` classifies every prompt in your sessions, tells you how many actually needed Sonnet or Opus, and blocks sessions before they bloat past 5x baseline waste. Your context is saved across compactions and injected back on the next start.
+
+```
+Your prompts, last 7 days:
+
+  complex   (needed the model)       ████████░░░░░░░░░░░░░░░░░░░░░░  27%
+  medium    (ambiguous)              █████░░░░░░░░░░░░░░░░░░░░░░░░░  15%
+  simple    (Haiku would do)         ████████████░░░░░░░░░░░░░░░░░░  40%
+  "ok" / "continue" / "go"           █████░░░░░░░░░░░░░░░░░░░░░░░░░  18%
+
+  73% ran on the model you picked, but didn't need it.
+```
 
 ```
 npm install -g claude-audit
 claude-audit install
 ```
+
+Requires Node.js 16+. Works with Claude Code CLI, VS Code extension, JetBrains extension. Does **not** work with Claude Code on the web.
 
 ---
 
@@ -17,7 +30,7 @@ claude-audit install
 
 | Hook | Event | Action |
 |------|-------|--------|
-| `--hook prompt` | UserPromptSubmit | Measures waste factor (current tokens / baseline). Blocks if ≥ 10x. |
+| `--hook prompt` | UserPromptSubmit | Measures waste factor (current tokens / baseline). Blocks if ≥ 5x. |
 | `--hook tool` | PostToolUse | Exits with code 2 to stop autonomous work on runaway sessions. |
 | `--hook compact` | PreCompact | Saves project + git state + file list to `~/.claude-audit/last-session.md`. |
 | `--hook start` | SessionStart | Injects saved context if < 48 hours old — continues where you left off. |
@@ -54,25 +67,61 @@ claude-audit uninstall  # removes only claude-audit hooks
 
 ---
 
+## All commands
+
+| Command | What it does |
+|---|---|
+| `claude-audit` | Interactive dashboard (prompt mix + daily spend + worst sessions) |
+| `claude-audit --last 30d` | Plain-text waste report for the window |
+| `claude-audit --json` | Machine-readable report |
+| `claude-audit --report` | Writes a standalone HTML report |
+| `claude-audit install` | Register 4 hooks in `~/.claude/settings.json` |
+| `claude-audit install --shadow` | Register hooks in observe-only mode — logs, never blocks |
+| `claude-audit install-autorestart` | Set up `claude-loop.ps1` to auto-rotate sessions (Windows) |
+| `claude-audit uninstall` | Remove claude-audit hooks (leaves other tools alone) |
+| `claude-audit status` | Hook install state + current session waste factor |
+| `claude-audit shadow-report` | Summary of shadow-mode events |
+| `claude-audit doctor` | Scan for Claude Code versions with known cache bugs (2.1.69–2.1.89) |
+| `claude-audit setup` | Store Anthropic API key for real billing reconciliation |
+| `claude-audit billing [--last 30d]` | Fetch real daily charges from Anthropic `/v1/usage` |
+| `claude-audit reconcile <export-file>` | Cross-reference a Token Slasher export against local metering |
+| `claude-audit redundancy [session-file]` | Walk tool-use blocks, hit the ExecutionGate, report redundant calls |
+| `claude-audit gate-stats` | JSON dump of ExecutionGate (`claude_audit` space) stats |
+
+Hook modes are invoked by Claude Code, not by humans:
+
+| Hook flag | Fires on | Effect |
+|---|---|---|
+| `claude-audit --hook prompt` | `UserPromptSubmit` | Block if waste factor ≥ threshold |
+| `claude-audit --hook tool` | `PostToolUse` | Stop autonomous work on runaway sessions |
+| `claude-audit --hook compact` | `PreCompact` | Save session state to `~/.claude-audit/last-session.md` |
+| `claude-audit --hook start` | `SessionStart` | Inject saved context if < 48h old |
+
+---
+
 ## Configuration
 
 `~/.claude-audit/config.json` (auto-created):
 
 ```json
 {
-  "threshold": 10,
-  "minTurns": 20,
+  "threshold": 5,
+  "saveThreshold": 3,
+  "minTurns": 15,
   "baselineTurns": 5,
-  "windowTurns": 5
+  "windowTurns": 5,
+  "mode": "enforce"
 }
 ```
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `threshold` | `10` | Waste factor that triggers block (current avg / baseline avg) |
-| `minTurns` | `20` | Minimum turns before enforcement kicks in |
+| `threshold` | `5` | Waste factor that triggers session kill + restart (current avg / baseline avg) |
+| `saveThreshold` | `3` | Waste factor that triggers git savepoint + early warning |
+| `minTurns` | `15` | Minimum turns before enforcement kicks in |
 | `baselineTurns` | `5` | Turns used to establish baseline token cost |
 | `windowTurns` | `5` | Recent turns used to compute current token cost |
+| `mode` | `"enforce"` | `"enforce"` blocks at threshold. `"shadow"` logs but never blocks (use `install --shadow` for observe-only). |
 
 **Escape hatch:** `CLAUDE_AUDIT_SKIP=1` disables blocking for a single session.
 

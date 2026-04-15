@@ -1945,7 +1945,7 @@ function printDashboard(sub, bug, enforced, window, billing) {
   console.log(`  STATUS`);
   console.log(`  ${SL}`);
   const enfLabel = enforced ? "ON" : yl("OFF");
-  const enfNote  = enforced ? dim("  (sessions blocked at 10x waste, context auto-saved)") : dim("  →  type 4 to install");
+  const enfNote  = enforced ? dim("  (sessions blocked at 5x waste, context auto-saved)") : dim("  →  type 4 to install");
   console.log(`  Auto-enforcement    ${enfLabel}${enfNote}`);
   const bugLabel = bug.bugged > 0 ? yl(`AFFECTED  (${Math.round(bug.bugged/bug.total*100)}% of recent sessions)`) : "CLEAR";
   const bugNote  = bug.bugged > 0 ? dim("  →  type 3 for details") : dim("  (you're on a clean version)");
