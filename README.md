@@ -72,6 +72,7 @@ claude-audit uninstall  # removes only claude-audit hooks
 | Command | What it does |
 |---|---|
 | `claude-audit` | Interactive dashboard (prompt mix + daily spend + worst sessions) |
+| `claude-audit hud` | Live 2s-refresh HUD — inferences deferred, tokens saved, $ saved (requires ENTIENT gateway) |
 | `claude-audit --last 30d` | Plain-text waste report for the window |
 | `claude-audit --json` | Machine-readable report |
 | `claude-audit --report` | Writes a standalone HTML report |

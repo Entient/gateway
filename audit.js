@@ -1703,6 +1703,7 @@ function parseArgs() {
       if (args[i+1] && !args[i+1].startsWith("--")) opts.sessionFile = args[++i];
     }
     else if (args[i] === "gate-stats") { opts.command = "gate-stats"; }
+    else if (args[i] === "hud")              { opts.command = "hud";               }
     else if (args[i] === "--context" && args[i + 1]) { opts.context = args[++i]; }
     else if (args[i] === "--no-record")     { opts.noRecord = true; }
     else if (args[i] === "--verbose" || args[i] === "-v") { opts.verbose = true; }
@@ -2728,6 +2729,192 @@ print(json.dumps([{'date':r[0],'model':r[1],'tokens':r[2],'cost':r[3],'calls':r[
   console.log("");
 }
 
+// ── Live HUD ────────────────────────────────────────────────────────────────
+// Ports the data sources the tray icon already polls (entient-agent/tools/entient_tray.ps1):
+//   ~/.entient/governance/governance_events.jsonl  — deflect / forward events
+//   ~/.entient/forwards/forwards.jsonl             — intake pipeline
+// Customer-framed output: inferences deferred, tokens saved, $ saved, session waste factor.
+
+const ENTIENT_GOV_LOG  = path.join(os.homedir(), ".entient", "governance", "governance_events.jsonl");
+const ENTIENT_FWD_LOG  = path.join(os.homedir(), ".entient", "forwards", "forwards.jsonl");
+const ENTIENT_PID_FILE = path.join(os.homedir(), ".entient", "watcher.pid");
+const AVG_TOKENS_PER_INFERENCE = 1500;   // conservative rule-of-thumb for deferral value
+const AVG_USD_PER_INFERENCE    = 0.008;  // sonnet-ish blended rate on 1.5k tokens
+
+function tailBytes(filePath, maxBytes) {
+  try {
+    const st = fs.statSync(filePath);
+    const len = Math.min(st.size, maxBytes);
+    const fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, Math.max(0, st.size - len));
+    fs.closeSync(fd);
+    return buf.toString("utf8");
+  } catch (_) { return ""; }
+}
+
+function countGovEvents() {
+  // Tail ~32MB — ~80K events; cumulative counts over whatever window that spans.
+  // "last active" is the freshness signal, not a hardcoded time window.
+  const raw = tailBytes(ENTIENT_GOV_LOG, 32 * 1024 * 1024);
+  if (!raw) return null;
+  const lines = raw.split("\n");
+  lines.shift();
+  let deflect = 0, forward = 0, total = 0, firstTs = null, lastTs = null;
+  for (const line of lines) {
+    if (!line) continue;
+    let rec; try { rec = JSON.parse(line); } catch (_) { continue; }
+    const ts = rec.ts;
+    if (ts) { if (firstTs === null || ts < firstTs) firstTs = ts; if (lastTs === null || ts > lastTs) lastTs = ts; }
+    if (rec.type === "deflect") { deflect++; total++; }
+    else if (rec.type === "forward") { forward++; total++; }
+  }
+  return { deflect, forward, total, firstTs, lastTs };
+}
+
+function watcherRunning() {
+  try {
+    const pidRaw = fs.readFileSync(ENTIENT_PID_FILE, "utf8").trim();
+    const pid = parseInt(pidRaw, 10);
+    if (!pid) return false;
+    try { process.kill(pid, 0); return true; } catch (_) { return false; }
+  } catch (_) { return false; }
+}
+
+function activityState(lastTs) {
+  if (lastTs === null) return { label: "No recent traffic", color: dim };
+  const hrs = (Date.now() / 1000 - lastTs) / 3600;
+  if (hrs < 0.1) return { label: "Active now",       color: yl };
+  if (hrs < 1)   return { label: "Active recently",  color: yl };
+  if (hrs < 24)  return { label: "Idle",             color: dim };
+  return                 { label: "No recent traffic", color: dim };
+}
+
+function countForwards() {
+  const raw = tailBytes(ENTIENT_FWD_LOG, 1 * 1024 * 1024);
+  if (!raw) return { total: 0, sources: {} };
+  const lines = raw.split("\n");
+  lines.shift();
+  const sources = {};
+  let total = 0;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    total++;
+    let rec; try { rec = JSON.parse(line); } catch (_) { continue; }
+    const src = rec.source || "mcp";
+    sources[src] = (sources[src] || 0) + 1;
+  }
+  return { total, sources };
+}
+
+function bar(pct, width = 24) {
+  const fill = Math.max(0, Math.min(width, Math.round((pct / 100) * width)));
+  return "█".repeat(fill) + "░".repeat(width - fill);
+}
+
+function fmtNum(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return String(n);
+}
+
+function renderHud() {
+  const gov = countGovEvents();
+  const fwd = countForwards();
+  const running = watcherRunning();
+
+  // Session waste factor (reuse existing logic)
+  let sessionLine = dim("no active session detected");
+  try {
+    const sf = currentSessionFile();
+    if (sf) {
+      const w = computeWasteFactor(sf);
+      const factor = w.factor || 1;
+      const thresh = DEFAULTS.threshold;
+      const pct = Math.min(100, (factor / thresh) * 100);
+      sessionLine = `waste factor ${bold(factor + "x")} / ${thresh}x kill  ${bar(pct, 20)}  turns=${w.turns}`;
+    }
+  } catch (_) {}
+
+  const lines = [];
+  lines.push("");
+  lines.push(bold("  ENTIENT · claude-audit  live HUD") + dim("    (cumulative, refresh 2s, q to quit)"));
+  lines.push("  " + SL);
+
+  if (!gov) {
+    lines.push("  " + dim("no ENTIENT governance log found at"));
+    lines.push("  " + dim("  " + ENTIENT_GOV_LOG));
+    lines.push("  " + dim("install the gateway at entient.ai to unlock deferral metrics"));
+  } else {
+    const deflectPct  = gov.total ? (gov.deflect / gov.total) * 100 : 0;
+    const per100      = Math.round(deflectPct);
+    const tokensSaved = gov.deflect * AVG_TOKENS_PER_INFERENCE;
+    const usdSaved    = gov.deflect * AVG_USD_PER_INFERENCE;
+    const state       = activityState(gov.lastTs);
+    const runBadge    = running ? yl("● running") : dim("○ stopped");
+
+    lines.push("");
+    lines.push(bold("  LLM CALLS AVOIDED") + dim("  (ENTIENT caught these before the model)"));
+    lines.push("    " + bar(deflectPct, 30) + "  " +
+               yl(deflectPct.toFixed(0) + "%") + "   " +
+               bold(String(gov.deflect)) + " / " + gov.total + " prompts");
+    lines.push("    " + dim(per100 + " of every 100 prompts avoided · " + state.color(state.label) +
+                            " · watcher " + runBadge));
+    lines.push("");
+    lines.push(bold("  ESTIMATED TOKENS SAVED") + "   " + yl("~" + fmtNum(tokensSaved) + " tok"));
+    lines.push(bold("  ESTIMATED $ SAVED") + "        " + bold("$" + usdSaved.toFixed(2)));
+    lines.push("");
+    lines.push(bold("  FORWARDED TO LLM") + "         " + String(gov.forward) +
+               dim("  (couldn't avoid — needed inference)"));
+  }
+
+  lines.push("");
+  lines.push("  " + SL);
+  lines.push(bold("  THIS CLAUDE SESSION") + "     " + sessionLine);
+  lines.push("");
+  lines.push("  " + dim("intake pipeline: " + fwd.total + " forwards  ") +
+             Object.entries(fwd.sources).map(([k, v]) => `${k}=${v}`).join(" "));
+  lines.push("");
+  lines.push("  " + dim("savings estimated from avoided forwarded tokens · entient.ai"));
+  lines.push("");
+
+  return lines.join("\n");
+}
+
+function hud() {
+  const isTTY = process.stdout.isTTY;
+  if (!isTTY) {
+    // Non-TTY: single-shot render for scripting / piping.
+    console.log(renderHud());
+    return;
+  }
+
+  // TTY: clear + repaint every 2s.
+  const hide = "\x1b[?25l", show = "\x1b[?25h", clear = "\x1b[2J\x1b[H";
+  process.stdout.write(hide);
+
+  const paint = () => { process.stdout.write(clear + renderHud() + "\n"); };
+  paint();
+  const timer = setInterval(paint, 2000);
+
+  const cleanup = () => {
+    clearInterval(timer);
+    process.stdout.write(show + "\n");
+    process.exit(0);
+  };
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
+
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("data", buf => {
+      const k = buf.toString();
+      if (k === "q" || k === "Q" || k === "\x03") cleanup();
+    });
+  }
+}
+
 function main() {
   const opts = parseArgs();
 
@@ -2750,6 +2937,7 @@ function main() {
   if (opts.command === "reconcile") { reconcile(opts.reconcileFile); return; }
   if (opts.command === "redundancy") { redundancyReport(opts); return; }
   if (opts.command === "gate-stats") { gateStatsCmd(); return; }
+  if (opts.command === "hud")       { hud(); return; }
 
   // Non-interactive modes
   if (opts.json) {
