@@ -1,4 +1,4 @@
-# claude-audit
+# entient-gateway
 
 **See which prompts didn't need the model you paid for.**
 
