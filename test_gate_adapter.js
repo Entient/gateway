@@ -73,7 +73,7 @@ function testCanonicalizationTrimsStrings() {
 }
 
 function testCliMissThenHit() {
-  // Direct CLI round-trip at the TEST_SPACE so we don't touch claude_audit.
+  // Direct CLI round-trip at the TEST_SPACE so we don't touch the live claude_audit space.
   const miss = runCli(["check", "--obligation", "ob:x", "--context", "ctxA"]);
   assert.strictEqual(miss.verdict, "MISS", `expected MISS got ${JSON.stringify(miss)}`);
 

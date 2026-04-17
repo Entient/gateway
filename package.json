@@ -1,14 +1,14 @@
 {
-  "name": "claude-audit",
+  "name": "@entient/gateway",
   "version": "1.0.0",
-  "description": "Claude Code session enforcer + waste analyzer. Blocks runaway sessions, saves context across compactions, auto-injects context on resume.",
+  "description": "Entient Gateway Runtime — the local half of Entient Gateway. Collapse redundant LLM work, preserve session context across compactions, surface real $ saved. Companion to Gateway Cloud (receipts/identity/trust).",
   "bin": {
-    "claude-audit": "./audit.js"
+    "entient-gateway": "./audit.js"
   },
   "scripts": {
     "start": "node audit.js"
   },
-  "keywords": ["claude", "claude-code", "ai-spend", "anthropic", "waste", "optimization", "hooks", "enforcement", "session", "context"],
+  "keywords": ["entient", "entient-gateway", "gateway", "gateway-runtime", "llm-cost", "collapse", "context-preservation", "hooks", "enforcement"],
   "author": "Entient",
   "license": "MIT",
   "engines": {
@@ -16,10 +16,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Entient/claude-audit"
+    "url": "https://github.com/Entient/gateway"
   },
-  "homepage": "https://github.com/Entient/claude-audit#readme",
+  "homepage": "https://github.com/Entient/gateway#readme",
   "bugs": {
-    "url": "https://github.com/Entient/claude-audit/issues"
+    "url": "https://github.com/Entient/gateway/issues"
   }
 }

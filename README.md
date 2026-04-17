@@ -1,8 +1,13 @@
-# entient-gateway
+# Entient Gateway Runtime
 
-**See which prompts didn't need the model you paid for.**
+**The local half of [Entient Gateway](https://entient.ai). Collapse redundant LLM work. Preserve session context. See what you actually saved.**
 
-Most Claude Code quota is spent on the wrong model. `claude-audit` classifies every prompt in your sessions, tells you how many actually needed Sonnet or Opus, and blocks sessions before they bloat past 5x baseline waste. Your context is saved across compactions and injected back on the next start.
+Entient Gateway is one product with two halves:
+
+- **Gateway Runtime** (this package) — runs on the customer side. Intercepts Claude Code sessions, blocks runaway waste, saves context across compactions, and surfaces $ saved in a live HUD.
+- **Gateway Cloud** — hosted half. Receipts, identity, trust. Turns "I ran it" into "here is the proof."
+
+Collapse is the flagship behavior both halves enforce: *after the first witness, identical or derivable work is resolved by lookup, not execution.*
 
 ```
 Your prompts, last 7 days:
@@ -16,11 +21,13 @@ Your prompts, last 7 days:
 ```
 
 ```
-npm install -g claude-audit
-claude-audit install
+npm install -g @entient/gateway
+entient-gateway install
 ```
 
 Requires Node.js 16+. Works with Claude Code CLI, VS Code extension, JetBrains extension. Does **not** work with Claude Code on the web.
+
+> Migrating from `claude-audit`? See [MIGRATION.md](./MIGRATION.md).
 
 ---
 
@@ -32,15 +39,15 @@ Requires Node.js 16+. Works with Claude Code CLI, VS Code extension, JetBrains e
 |------|-------|--------|
 | `--hook prompt` | UserPromptSubmit | Measures waste factor (current tokens / baseline). Blocks if ≥ 5x. |
 | `--hook tool` | PostToolUse | Exits with code 2 to stop autonomous work on runaway sessions. |
-| `--hook compact` | PreCompact | Saves project + git state + file list to `~/.claude-audit/last-session.md`. |
+| `--hook compact` | PreCompact | Saves project + git state + file list to `~/.entient-gateway/last-session.md`. |
 | `--hook start` | SessionStart | Injects saved context if < 48 hours old — continues where you left off. |
 
 ### 2. Waste report (no hooks needed)
 
 ```
-claude-audit             # last 7 days
-claude-audit --last 30d
-claude-audit --json      # machine-readable
+entient-gateway             # last 7 days
+entient-gateway --last 30d
+entient-gateway --json      # machine-readable
 ```
 
 Shows:
@@ -54,15 +61,15 @@ Shows:
 ## Install
 
 ```bash
-npm install -g claude-audit
-claude-audit install    # adds 4 hooks to ~/.claude/settings.json
-claude-audit status     # verify installation
+npm install -g @entient/gateway
+entient-gateway install    # adds 4 hooks to ~/.claude/settings.json
+entient-gateway status     # verify installation
 ```
 
-**Safe with existing hooks** — `install` appends to your hook list without overwriting ENTIENT, clauditor, or any other hooks you have.
+**Safe with existing hooks** — `install` appends to your hook list without overwriting ENTIENT or any other hooks you have.
 
 ```bash
-claude-audit uninstall  # removes only claude-audit hooks
+entient-gateway uninstall  # removes only entient-gateway hooks
 ```
 
 ---
@@ -71,38 +78,38 @@ claude-audit uninstall  # removes only claude-audit hooks
 
 | Command | What it does |
 |---|---|
-| `claude-audit` | Interactive dashboard (prompt mix + daily spend + worst sessions) |
-| `claude-audit hud` | Live 2s-refresh HUD — inferences deferred, tokens saved, $ saved (requires ENTIENT gateway) |
-| `claude-audit --last 30d` | Plain-text waste report for the window |
-| `claude-audit --json` | Machine-readable report |
-| `claude-audit --report` | Writes a standalone HTML report |
-| `claude-audit install` | Register 4 hooks in `~/.claude/settings.json` |
-| `claude-audit install --shadow` | Register hooks in observe-only mode — logs, never blocks |
-| `claude-audit install-autorestart` | Set up `claude-loop.ps1` to auto-rotate sessions (Windows) |
-| `claude-audit uninstall` | Remove claude-audit hooks (leaves other tools alone) |
-| `claude-audit status` | Hook install state + current session waste factor |
-| `claude-audit shadow-report` | Summary of shadow-mode events |
-| `claude-audit doctor` | Scan for Claude Code versions with known cache bugs (2.1.69–2.1.89) |
-| `claude-audit setup` | Store Anthropic API key for real billing reconciliation |
-| `claude-audit billing [--last 30d]` | Fetch real daily charges from Anthropic `/v1/usage` |
-| `claude-audit reconcile <export-file>` | Cross-reference a Token Slasher export against local metering |
-| `claude-audit redundancy [session-file]` | Walk tool-use blocks, hit the ExecutionGate, report redundant calls |
-| `claude-audit gate-stats` | JSON dump of ExecutionGate (`claude_audit` space) stats |
+| `entient-gateway` | Interactive dashboard (prompt mix + daily spend + worst sessions) |
+| `entient-gateway hud` | Live 2s-refresh HUD — inferences deferred, tokens saved, $ saved (requires Gateway Cloud) |
+| `entient-gateway --last 30d` | Plain-text waste report for the window |
+| `entient-gateway --json` | Machine-readable report |
+| `entient-gateway --report` | Writes a standalone HTML report |
+| `entient-gateway install` | Register 4 hooks in `~/.claude/settings.json` |
+| `entient-gateway install --shadow` | Register hooks in observe-only mode — logs, never blocks |
+| `entient-gateway install-autorestart` | Set up `claude-loop.ps1` to auto-rotate sessions (Windows) |
+| `entient-gateway uninstall` | Remove entient-gateway hooks (leaves other tools alone) |
+| `entient-gateway status` | Hook install state + current session waste factor |
+| `entient-gateway shadow-report` | Summary of shadow-mode events |
+| `entient-gateway doctor` | Scan for Claude Code versions with known cache bugs (2.1.69–2.1.89) |
+| `entient-gateway setup` | Store Anthropic API key for real billing reconciliation |
+| `entient-gateway billing [--last 30d]` | Fetch real daily charges from Anthropic `/v1/usage` |
+| `entient-gateway reconcile <export-file>` | Cross-reference a Token Slasher export against local metering |
+| `entient-gateway redundancy [session-file]` | Walk tool-use blocks, hit the ExecutionGate, report redundant calls |
+| `entient-gateway gate-stats` | JSON dump of ExecutionGate stats |
 
 Hook modes are invoked by Claude Code, not by humans:
 
 | Hook flag | Fires on | Effect |
 |---|---|---|
-| `claude-audit --hook prompt` | `UserPromptSubmit` | Block if waste factor ≥ threshold |
-| `claude-audit --hook tool` | `PostToolUse` | Stop autonomous work on runaway sessions |
-| `claude-audit --hook compact` | `PreCompact` | Save session state to `~/.claude-audit/last-session.md` |
-| `claude-audit --hook start` | `SessionStart` | Inject saved context if < 48h old |
+| `entient-gateway --hook prompt` | `UserPromptSubmit` | Block if waste factor ≥ threshold |
+| `entient-gateway --hook tool` | `PostToolUse` | Stop autonomous work on runaway sessions |
+| `entient-gateway --hook compact` | `PreCompact` | Save session state to `~/.entient-gateway/last-session.md` |
+| `entient-gateway --hook start` | `SessionStart` | Inject saved context if < 48h old |
 
 ---
 
 ## Configuration
 
-`~/.claude-audit/config.json` (auto-created):
+`~/.entient-gateway/config.json` (auto-created):
 
 ```json
 {
@@ -124,7 +131,7 @@ Hook modes are invoked by Claude Code, not by humans:
 | `windowTurns` | `5` | Recent turns used to compute current token cost |
 | `mode` | `"enforce"` | `"enforce"` blocks at threshold. `"shadow"` logs but never blocks (use `install --shadow` for observe-only). |
 
-**Escape hatch:** `CLAUDE_AUDIT_SKIP=1` disables blocking for a single session.
+**Escape hatch:** `ENTIENT_GATEWAY_SKIP=1` disables blocking for a single session.
 
 ---
 
@@ -138,7 +145,7 @@ A session starts lean (low baseline). As context bloats, each turn costs more to
 
 ## Context preservation
 
-Before Claude compacts your session, `claude-audit` saves:
+Before Claude compacts your session, Gateway Runtime saves:
 
 ```markdown
 # Session Context — 2026-04-04T12:00:00Z
@@ -154,12 +161,6 @@ Turns: 47 | Baseline: 1,200 tok/turn | Current: 4,800 tok/turn | Factor: 4.0x
 ```
 
 On the next session start, this is injected as `additionalContext` — Claude resumes with full awareness of what was happening.
-
----
-
-## Works alongside ENTIENT
-
-If you use [ENTIENT](https://entient.ai) for operator deflection and spend accountability, `claude-audit install` coexists safely — both hook sets fire in sequence.
 
 ---
 

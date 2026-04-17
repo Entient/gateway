@@ -1,13 +1,15 @@
 /**
  * gate_adapter.js — thin Node wrapper around entient_agent.runtime.gate_cli.
  *
- * Contract v1 consumer.  claude-audit uses the SAME ExecutionGate primitive
+ * Contract v1 consumer.  Entient Gateway Runtime uses the SAME ExecutionGate primitive
  * as the Agent hooks; HIT/MISS semantics are defined by that gate, not by
  * this file.  This file is pure adaptation — it spawns Python, passes
  * obligation + context, and parses the JSON verdict back.
  *
  * Own obligation space: "claude_audit" (per contract rule I1 — one space
- * per gate instance, one DB per space).
+ * per gate instance, one DB per space). Space name is retained from the
+ * pre-rename product to preserve existing receipt history; the public
+ * product name (Entient Gateway Runtime) is unrelated to the space key.
  *
  * Exports:
  *   obligationForToolUse(toolName, toolInput) -> string
@@ -112,7 +114,7 @@ function gateCheck(obligation, context) {
 /**
  * Record a receipt after verifiable success (contract I2).
  *
- * claude-audit only records receipts in its own space; it does not
+ * Gateway Runtime only records receipts in its own space; it does not
  * pollute the Agent hook's result_store.
  */
 function gateRecord(obligation, receipt, context, meta) {

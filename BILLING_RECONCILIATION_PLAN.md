@@ -1,10 +1,10 @@
-# claude-audit — Billing Reconciliation Plan
+# Entient Gateway Runtime — Billing Reconciliation Plan
 
 ## WHERE TO FIND THIS
-- This file: `C:\Users\Brock1\Desktop\claude-audit\BILLING_RECONCILIATION_PLAN.md`
+- This file: `C:\Users\Brock1\Desktop\entient-gateway\BILLING_RECONCILIATION_PLAN.md`
 - Memory doc: `~/.claude/projects/C--Users-Brock1-Desktop-Agent/memory/project_claude_audit.md`
 - Token Slasher extension: `C:\Users\Brock1\Desktop\token-slasher-extension\`
-- claude-audit tool: `C:\Users\Brock1\Desktop\claude-audit\audit.js`
+- Gateway Runtime tool: `C:\Users\Brock1\Desktop\entient-gateway\audit.js`
 
 ---
 
@@ -51,7 +51,7 @@ Token Slasher v2.2.0 is already:
 
 **What's missing:** An export button.
 
-**Fix needed (popup.js):** Add "Export to claude-audit" button that writes
+**Fix needed (popup.js):** Add "Export to entient-gateway" button that writes
 `chrome.storage.local` history to a file the user can save. Token Slasher
 already has the data — it just needs a way out.
 
@@ -60,7 +60,7 @@ When user clicks export:
 2. Structures as JSON with invoices + daily usage
 3. User saves file as `claude-audit-billing.json` to their home folder
 
-### Part 2 — claude-audit reconcile command (TO BUILD)
+### Part 2 — entient-gateway reconcile command (TO BUILD)
 
 `node audit.js reconcile` reads `~/claude-audit-billing.json` (from Token Slasher export)
 and cross-references with `metering.db` + session files.
@@ -91,8 +91,8 @@ Once done: every dollar is visible. No more mystery charges.
    - Add button that dumps `chrome.storage.local[ts_history]` to downloadable JSON
    - Reload extension in Chrome (chrome://extensions → reload)
 
-2. **Add `reconcile` command to claude-audit**
-   - File: `C:\Users\Brock1\Desktop\claude-audit\audit.js`
+2. **Add `reconcile` command to entient-gateway**
+   - File: `C:\Users\Brock1\Desktop\entient-gateway\audit.js`
    - Reads `~/claude-audit-billing.json`
    - Cross-refs with `~/.entient/v2/metering.db`
    - Outputs per-invoice breakdown
