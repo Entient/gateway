@@ -3029,6 +3029,11 @@ function countGovEvents() {
   const lines = raw.split("\n");
   lines.shift();
   let deflect = 0, forward = 0, total = 0, firstTs = null, lastTs = null;
+  // Measured-avoided-cost rollup (from deflect_measured events; see
+  // entient-interceptor/deflect_cost_measurement.py). Parallel to the deflect
+  // counter — always present, 0 if the interceptor hasn't measured anything.
+  let measuredCount = 0, measuredErrors = 0;
+  let measuredInputTokens = 0, measuredUsdAvoided = 0;
   for (const line of lines) {
     if (!line) continue;
     let rec; try { rec = JSON.parse(line); } catch (_) { continue; }
@@ -3036,8 +3041,21 @@ function countGovEvents() {
     if (ts) { if (firstTs === null || ts < firstTs) firstTs = ts; if (lastTs === null || ts > lastTs) lastTs = ts; }
     if (rec.type === "deflect") { deflect++; total++; }
     else if (rec.type === "forward") { forward++; total++; }
+    else if (rec.type === "deflect_measured") {
+      const d = rec.data || {};
+      if (d.status === "ok") {
+        measuredCount++;
+        measuredInputTokens += d.input_tokens_measured || 0;
+        measuredUsdAvoided  += d.input_cost_usd_avoided || 0;
+      } else {
+        measuredErrors++;
+      }
+    }
   }
-  return { deflect, forward, total, firstTs, lastTs };
+  return {
+    deflect, forward, total, firstTs, lastTs,
+    measuredCount, measuredErrors, measuredInputTokens, measuredUsdAvoided,
+  };
 }
 
 function watcherRunning() {
@@ -3116,8 +3134,6 @@ function renderHud() {
   } else {
     const deflectPct  = gov.total ? (gov.deflect / gov.total) * 100 : 0;
     const per100      = Math.round(deflectPct);
-    const tokensSaved = gov.deflect * AVG_TOKENS_PER_INFERENCE;
-    const usdSaved    = gov.deflect * AVG_USD_PER_INFERENCE;
     const state       = activityState(gov.lastTs);
     const runBadge    = running ? yl("● running") : dim("○ stopped");
 
@@ -3129,8 +3145,46 @@ function renderHud() {
     lines.push("    " + dim(per100 + " of every 100 prompts avoided · " + state.color(state.label) +
                             " · watcher " + runBadge));
     lines.push("");
-    lines.push(bold("  ESTIMATED TOKENS SAVED") + "   " + yl("~" + fmtNum(tokensSaved) + " tok"));
-    lines.push(bold("  ESTIMATED $ SAVED") + "        " + bold("$" + usdSaved.toFixed(2)));
+
+    // Prefer measured numbers from deflect_measured events (backed by
+    // Anthropic /v1/messages/count_tokens). Fall back to the rule-of-thumb
+    // estimate when measurement is disabled or hasn't run yet.
+    const measured      = gov.measuredCount || 0;
+    const measurableMin = Math.max(measured, 1);
+    const coveragePct   = gov.deflect > 0 ? Math.min(100, (measured / gov.deflect) * 100) : 0;
+
+    if (measured > 0) {
+      // Extrapolate: if we measured M of D deflects at avg $X/deflect,
+      // projected total = X * D. Show both measured-so-far and projected.
+      const avgUsdPerDeflect = gov.measuredUsdAvoided / measurableMin;
+      const avgTokPerDeflect = gov.measuredInputTokens / measurableMin;
+      const projUsd  = avgUsdPerDeflect * gov.deflect;
+      const projTok  = avgTokPerDeflect * gov.deflect;
+
+      lines.push(bold("  INPUT TOKENS AVOIDED") + dim("   (measured by count_tokens)"));
+      lines.push("    " + yl(fmtNum(gov.measuredInputTokens) + " tok") +
+                 dim("  measured across " + measured + " deflects"));
+      lines.push("    " + dim("projected total: ~" + fmtNum(projTok) + " tok  (scaled to all " +
+                 gov.deflect + " deflects)"));
+      lines.push("");
+      lines.push(bold("  INPUT $ AVOIDED") + "          " +
+                 bold("$" + gov.measuredUsdAvoided.toFixed(4)) +
+                 dim("  measured"));
+      lines.push("    " + dim("projected total: ~$" + projUsd.toFixed(2) +
+                 "  (coverage: " + coveragePct.toFixed(0) + "% of deflects measured)"));
+      if (gov.measuredErrors > 0) {
+        lines.push("    " + dim(gov.measuredErrors + " measurement errors (network/auth) — still deflected, just uncounted"));
+      }
+    } else {
+      // Fallback: coarse estimate. Flag explicitly so nobody confuses this for measurement.
+      const tokensSaved = gov.deflect * AVG_TOKENS_PER_INFERENCE;
+      const usdSaved    = gov.deflect * AVG_USD_PER_INFERENCE;
+      lines.push(bold("  ESTIMATED TOKENS SAVED") + "   " + yl("~" + fmtNum(tokensSaved) + " tok") +
+                 dim("  (rule-of-thumb)"));
+      lines.push(bold("  ESTIMATED $ SAVED") + "        " + bold("$" + usdSaved.toFixed(2)) +
+                 dim("  (rule-of-thumb)"));
+      lines.push("    " + dim("enable measured cost: setx ENTIENT_DEFLECT_COST_MEASUREMENT on"));
+    }
     lines.push("");
     lines.push(bold("  FORWARDED TO LLM") + "         " + String(gov.forward) +
                dim("  (couldn't avoid — needed inference)"));
@@ -3143,7 +3197,10 @@ function renderHud() {
   lines.push("  " + dim("intake pipeline: " + fwd.total + " forwards  ") +
              Object.entries(fwd.sources).map(([k, v]) => `${k}=${v}`).join(" "));
   lines.push("");
-  lines.push("  " + dim("savings estimated from avoided forwarded tokens · entient.ai"));
+  const footer = (gov && gov.measuredCount > 0)
+    ? "input $ avoided = sum of Anthropic count_tokens × public input rate · entient.ai"
+    : "savings estimated from avoided forwarded tokens · entient.ai";
+  lines.push("  " + dim(footer));
   lines.push("");
 
   return lines.join("\n");
