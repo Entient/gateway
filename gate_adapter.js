@@ -1,15 +1,14 @@
 /**
  * gate_adapter.js — thin Node wrapper around entient_agent.runtime.gate_cli.
  *
- * Contract v1 consumer.  Entient Gateway Runtime uses the SAME ExecutionGate primitive
+ * Contract v1 consumer. Entient Spend uses the SAME ExecutionGate primitive
  * as the Agent hooks; HIT/MISS semantics are defined by that gate, not by
- * this file.  This file is pure adaptation — it spawns Python, passes
+ * this file. This file is pure adaptation — it spawns Python, passes
  * obligation + context, and parses the JSON verdict back.
  *
- * Own obligation space: "claude_audit" (per contract rule I1 — one space
- * per gate instance, one DB per space). Space name is retained from the
- * pre-rename product to preserve existing receipt history; the public
- * product name (Entient Gateway Runtime) is unrelated to the space key.
+ * Own obligation space: "entient_spend" (per contract rule I1 — one space
+ * per gate instance, one DB per space). Prior space "claude_audit" was
+ * abandoned in the 2026-04-21 rename; receipt history there was test-only.
  *
  * Exports:
  *   obligationForToolUse(toolName, toolInput) -> string
@@ -23,7 +22,7 @@
 const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 
-const GATE_SPACE = "claude_audit";
+const GATE_SPACE = "entient_spend";
 const CLI_TIMEOUT_MS = 5000;
 
 /**
@@ -114,7 +113,7 @@ function gateCheck(obligation, context) {
 /**
  * Record a receipt after verifiable success (contract I2).
  *
- * Gateway Runtime only records receipts in its own space; it does not
+ * Entient Spend only records receipts in its own space; it does not
  * pollute the Agent hook's result_store.
  */
 function gateRecord(obligation, receipt, context, meta) {

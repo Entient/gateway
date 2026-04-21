@@ -17,7 +17,7 @@ const { execSync } = require("child_process");
 const ga = require("./gate_adapter.js");
 
 // Use a unique space name per run so we don't collide with prior state.
-const TEST_SPACE = "claude_audit_test_" + Date.now();
+const TEST_SPACE = "entient_spend_test_" + Date.now();
 
 // Monkey-patch GATE_SPACE for this run by overriding module exports.
 // (Export is read-only; we hack the module by re-require after setting env
@@ -73,7 +73,7 @@ function testCanonicalizationTrimsStrings() {
 }
 
 function testCliMissThenHit() {
-  // Direct CLI round-trip at the TEST_SPACE so we don't touch the live claude_audit space.
+  // Direct CLI round-trip at the TEST_SPACE so we don't touch the live entient_spend space.
   const miss = runCli(["check", "--obligation", "ob:x", "--context", "ctxA"]);
   assert.strictEqual(miss.verdict, "MISS", `expected MISS got ${JSON.stringify(miss)}`);
 

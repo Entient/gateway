@@ -1,4 +1,4 @@
-# Gateway Runtime — Numbers Audit Spec
+# Entient Spend — Numbers Audit Spec
 
 Evergreen audit for any number this runtime reports that might end up in a positioning doc, a sales letter, or a public claim. Run it before citing figures. Run it again after any change to `audit.js`.
 
@@ -8,7 +8,7 @@ node audit/run_audit.js
 
 ## Scope
 
-This audits the Gateway Runtime's own self-measurement. It does **not** audit the underlying Claude transcripts — those are the ground truth. It audits our classifier's reading of them.
+This audits the Entient Spend's own self-measurement. It does **not** audit the underlying Claude transcripts — those are the ground truth. It audits our classifier's reading of them.
 
 Six questions, in order:
 
@@ -36,7 +36,7 @@ A prompt classifier output of `continuation`. Rule (v2, 2026-04-17): strip a lea
 A prompt classifier output of `high`. Rule: matches `HIGH_RE` (traceback / error: / exception: / triple-backtick / architect / implement / refactor / generate code / write test / update spec). Known fragility: narrow vocabulary. "Debug the race condition" does not match — falls through to continuation if ≤8 words.
 
 ### `startup overhead`
-Per-session token count attributed to system prompt + tool definitions, as reported by the Gateway's session parser (`summarizeSession` in `audit.js`). Double-counting risk: Anthropic's cache-create tokens are billed once, cache-read tokens are billed separately at 10% rate. "Startup overhead" as currently implemented counts both.
+Per-session token count attributed to system prompt + tool definitions, as reported by Entient Spend's session parser (`summarizeSession` in `audit.js`). Double-counting risk: Anthropic's cache-create tokens are billed once, cache-read tokens are billed separately at 10% rate. "Startup overhead" as currently implemented counts both.
 
 ### `30-day window`
 Unix-epoch-ms boundary: `Date.now() - 30 * 86_400_000`. Inclusive of the boundary. Not calendar-aligned.

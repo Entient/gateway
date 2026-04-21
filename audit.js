@@ -1,27 +1,27 @@
 #!/usr/bin/env node
 /**
- * entient-gateway — Claude Code Waste Analyzer + Session Enforcer
+ * entient-spend — Claude Code Waste Analyzer + Session Enforcer
  *
  * Two modes:
  *   1. REPORT   — reads ~/.claude and shows where quota went (no hooks needed)
  *   2. ENFORCE  — registers hooks that block sessions when waste factor gets too high
  *
  * Usage:
- *   entient-gateway                        # waste report (last 7d)
- *   entient-gateway --last 30d
- *   entient-gateway install                # register enforcement hooks (blocks at 10x waste)
- *   entient-gateway install --shadow       # register hooks in observe-only mode (warn, never block)
- *   entient-gateway uninstall              # remove hooks
- *   entient-gateway status                 # show hook status + current waste factor
- *   entient-gateway --json                 # machine-readable report
+ *   entient-spend                        # waste report (last 7d)
+ *   entient-spend --last 30d
+ *   entient-spend install                # register enforcement hooks (blocks at 10x waste)
+ *   entient-spend install --shadow       # register hooks in observe-only mode (warn, never block)
+ *   entient-spend uninstall              # remove hooks
+ *   entient-spend status                 # show hook status + current waste factor
+ *   entient-spend --json                 # machine-readable report
  *
  *   # Hook modes (called by Claude Code, not users):
- *   entient-gateway --hook prompt          # UserPromptSubmit — block if waste too high
- *   entient-gateway --hook tool            # PostToolUse — block autonomous work if waste high
- *   entient-gateway --hook compact         # PreCompact — save session state
- *   entient-gateway --hook start           # SessionStart — inject saved context
+ *   entient-spend --hook prompt          # UserPromptSubmit — block if waste too high
+ *   entient-spend --hook tool            # PostToolUse — block autonomous work if waste high
+ *   entient-spend --hook compact         # PreCompact — save session state
+ *   entient-spend --hook start           # SessionStart — inject saved context
  *
- * Want automated enforcement?  entient.ai
+ * Want automated enforcement?  entient.com
  */
 
 "use strict";
@@ -31,7 +31,7 @@ const path = require("path");
 const os   = require("os");
 
 // ExecutionGate adapter — contract v1 consumer.  Lazy-loaded so a broken
-// Python/runtime install does not prevent `entient-gateway` itself from running.
+// Python/runtime install does not prevent `entient-spend` itself from running.
 let _gateAdapter = null;
 function gateAdapter() {
   if (_gateAdapter === null) {
@@ -43,7 +43,7 @@ function gateAdapter() {
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
-const AUDIT_DIR       = path.join(os.homedir(), ".entient-gateway");
+const AUDIT_DIR       = path.join(os.homedir(), ".entient-spend");
 const LAST_SESSION    = path.join(AUDIT_DIR, "last-session.md");
 const RESTART_FLAG    = path.join(AUDIT_DIR, "restart-flag");   // watched by claude-loop
 const CONFIG_FILE     = path.join(AUDIT_DIR, "config.json");
@@ -156,7 +156,7 @@ async function fetchAnthropicUsage(apiKey, days = 30) {
       }
 
       if (res.status === 401) {
-        return { ok: false, error: "Invalid API key. Check ~/.entient-gateway/config.json" };
+        return { ok: false, error: "Invalid API key. Check ~/.entient-spend/config.json" };
       }
       if (res.status !== 200) {
         return { ok: false, error: `Anthropic API error ${res.status}: ${res.body.slice(0, 200)}` };
@@ -222,7 +222,7 @@ async function fetchAnthropicUsage(apiKey, days = 30) {
  */
 async function countTokens(apiKey, { model = "claude-sonnet-4-5", messages, system, tools }) {
   const https = require("https");
-  if (!apiKey) return { ok: false, error: "No API key. Run: entient-gateway setup" };
+  if (!apiKey) return { ok: false, error: "No API key. Run: entient-spend setup" };
   if (!messages || !Array.isArray(messages)) {
     return { ok: false, error: "messages array is required" };
   }
@@ -270,7 +270,7 @@ async function countTokens(apiKey, { model = "claude-sonnet-4-5", messages, syst
 async function fetchAnthropicCostReport(adminKey, days = 30) {
   const https = require("https");
   if (!adminKey) {
-    return { ok: false, error: "No admin key. Run: entient-gateway setup --admin" };
+    return { ok: false, error: "No admin key. Run: entient-spend setup --admin" };
   }
   const since = new Date(Date.now() - days * 86_400_000);
   const startDate = since.toISOString().slice(0, 10);
@@ -336,11 +336,11 @@ async function setup() {
   });
 
   console.log("");
-  console.log(bold("  entient-gateway setup"));
+  console.log(bold("  entient-spend setup"));
   console.log(`  ${SL}`);
   console.log("");
-  console.log("  This connects entient-gateway to your real Anthropic billing data.");
-  console.log("  Your API key is stored locally in ~/.entient-gateway/config.json");
+  console.log("  This connects entient-spend to your real Anthropic billing data.");
+  console.log("  Your API key is stored locally in ~/.entient-spend/config.json");
   console.log("  Nothing is uploaded anywhere.");
   console.log("");
 
@@ -369,7 +369,7 @@ async function setup() {
 
   console.log("");
   console.log("  " + dim("Optional: Admin API key (apikey_... or sk-ant-admin...)"));
-  console.log("  " + dim("If you paste one, entient-gateway uses the authoritative /v1/organizations/cost_report"));
+  console.log("  " + dim("If you paste one, entient-spend uses the authoritative /v1/organizations/cost_report"));
   console.log("  " + dim("endpoint instead of estimating cost from the client-side price table."));
   const adminKey = await ask(`  Admin API key${cfg.anthropicAdminKey ? " [Enter to keep existing, 'clear' to remove]" : " [Enter to skip]"}: `);
   let finalAdminKey = cfg.anthropicAdminKey || "";
@@ -391,7 +391,7 @@ async function setup() {
 
   console.log("");
   console.log(`  Saved to ${CONFIG_FILE}`);
-  console.log("  Run entient-gateway to see your real spend.");
+  console.log("  Run entient-spend to see your real spend.");
   console.log("");
 }
 
@@ -624,13 +624,13 @@ function hookPrompt() {
   // Early warning: approaching threshold — run git savepoint now while Claude
   // is still alive and can finish any in-progress task cleanly.
   const saveThreshold = cfg.saveThreshold ?? 7;
-  if (!w.blocked && w.factor >= saveThreshold && !process.env.ENTIENT_GATEWAY_SKIP) {
+  if (!w.blocked && w.factor >= saveThreshold && !process.env.ENTIENT_SPEND_SKIP) {
     if (cfg.mode === "shadow") logShadowEvent("approaching", file, w, cfg);
     const saved = gitSavepoint();
     if (saved.length > 0) {
       process.stderr.write(
-        `[entient-gateway] WARNING: session at ${w.factor}x waste — rotation approaching (threshold ${cfg.threshold}x).\n` +
-        `[entient-gateway] Auto-saved: ${saved.join(", ")}\n`
+        `[entient-spend] WARNING: session at ${w.factor}x waste — rotation approaching (threshold ${cfg.threshold}x).\n` +
+        `[entient-spend] Auto-saved: ${saved.join(", ")}\n`
       );
     }
     process.exit(0);  // don't block yet
@@ -642,7 +642,7 @@ function hookPrompt() {
   if (cfg.mode === "shadow") {
     logShadowEvent("would_block_prompt", file, w, cfg);
     process.stderr.write(
-      `[entient-gateway] SHADOW: session at ${w.factor}x waste after ${w.turns} turns` +
+      `[entient-spend] SHADOW: session at ${w.factor}x waste after ${w.turns} turns` +
       ` (enforce threshold: ${cfg.threshold}x). Observing only.\n`
     );
     process.exit(0);
@@ -651,11 +651,11 @@ function hookPrompt() {
   // Save context before blocking
   saveSessionContext(file, w);
 
-  const autoRestart = !!process.env.ENTIENT_GATEWAY_AUTORESTART;
+  const autoRestart = !!process.env.ENTIENT_SPEND_AUTORESTART;
 
   const msg = [
     `+${"-".repeat(60)}+`,
-    `|  entient-gateway: Session using ${w.factor}x more quota than start  `.padEnd(62) + "|",
+    `|  entient-spend: Session using ${w.factor}x more quota than start  `.padEnd(62) + "|",
     `+${"-".repeat(60)}+`,
     ``,
     `Your turns started at ~${w.baseline.toLocaleString()} tokens.`,
@@ -665,12 +665,12 @@ function hookPrompt() {
     autoRestart
       ? `Auto-restart is ON. Rotating session now...`
       : `Session context saved. Start fresh: run \`claude\``,
-    `entient-gateway will inject your previous context automatically.`,
+    `entient-spend will inject your previous context automatically.`,
     ``,
-    `To continue anyway: set ENTIENT_GATEWAY_SKIP=1 in your environment.`,
+    `To continue anyway: set ENTIENT_SPEND_SKIP=1 in your environment.`,
   ].join("\n");
 
-  if (process.env.ENTIENT_GATEWAY_SKIP) { process.exit(0); }
+  if (process.env.ENTIENT_SPEND_SKIP) { process.exit(0); }
 
   // Output block decision first (so claude sees it before we kill the process)
   process.stdout.write(JSON.stringify({ decision: "block", reason: msg }) + "\n");
@@ -686,7 +686,7 @@ function hookPrompt() {
 function hookTool() {
   const cfg  = loadConfig();
   const file = currentSessionFile();
-  if (!file || process.env.ENTIENT_GATEWAY_SKIP) { process.exit(0); }
+  if (!file || process.env.ENTIENT_SPEND_SKIP) { process.exit(0); }
 
   const w = computeWasteFactor(file, cfg);
   if (!w || !w.blocked) { process.exit(0); }
@@ -695,7 +695,7 @@ function hookTool() {
   if (cfg.mode === "shadow") {
     logShadowEvent("would_block_tool", file, w, cfg);
     process.stderr.write(
-      `[entient-gateway] SHADOW: session at ${w.factor}x waste after ${w.turns} turns` +
+      `[entient-spend] SHADOW: session at ${w.factor}x waste after ${w.turns} turns` +
       ` (enforce threshold: ${cfg.threshold}x). Observing only.\n`
     );
     process.exit(0);
@@ -703,10 +703,10 @@ function hookTool() {
 
   saveSessionContext(file, w);
 
-  const autoRestart = !!process.env.ENTIENT_GATEWAY_AUTORESTART;
+  const autoRestart = !!process.env.ENTIENT_SPEND_AUTORESTART;
 
   process.stderr.write(
-    `[entient-gateway] Session at ${w.factor}x waste (${w.turns} turns). ` +
+    `[entient-spend] Session at ${w.factor}x waste (${w.turns} turns). ` +
     (autoRestart ? `Auto-restarting...\n` : `Start fresh: run \`claude\`. Context saved to ${LAST_SESSION}\n`)
   );
 
@@ -742,7 +742,7 @@ function hookStart() {
       const haikuPct = Math.round(sub.haikuEligible / sub.totalPrompts * 100);
       if (haikuPct >= 40) {
         parts.push(
-          `## Model advisory (entient-gateway)\n` +
+          `## Model advisory (entient-spend)\n` +
           `${haikuPct}% of your last 7 days of prompts were Haiku-eligible — ` +
           `simple questions, confirmations, one-liners that ran on ${sub.configuredModel} unnecessarily.\n` +
           `Consider starting this session with \`/model haiku\` and escalating to Sonnet only when the task gets complex.\n` +
@@ -808,7 +808,7 @@ function saveSessionContext(sessionFile, waste) {
   const lastWork   = sessionFile ? getLastActivity(sessionFile) : null;
 
   const lines = [
-    `# Previous Session (saved by entient-gateway)`,
+    `# Previous Session (saved by entient-spend)`,
     ``,
     `- **Project:** ${project}`,
     `- **Directory:** ${projectDir}`,
@@ -870,7 +870,7 @@ function install() {
 
     // Don't double-install
     const already = settings.hooks[event].some(h =>
-      (h.hooks || []).some(hh => (hh.command || "").includes("entient-gateway"))
+      (h.hooks || []).some(hh => (hh.command || "").includes("entient-spend"))
     );
     if (already) { console.log(`  ${event}: already installed`); continue; }
 
@@ -882,11 +882,11 @@ function install() {
   fs.writeFileSync(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2), "utf8");
 
   if (added > 0) {
-    console.log(`\n✓ entient-gateway installed (${added} hooks added)`);
+    console.log(`\n✓ entient-spend installed (${added} hooks added)`);
     console.log(`  Threshold: ${DEFAULTS.threshold}x waste factor`);
     console.log(`  Config:    ${CONFIG_FILE}`);
     console.log(`  Context:   ${LAST_SESSION}`);
-    console.log(`\n  To skip enforcement on a session: set ENTIENT_GATEWAY_SKIP=1`);
+    console.log(`\n  To skip enforcement on a session: set ENTIENT_SPEND_SKIP=1`);
   } else {
     console.log("\n✓ Already installed.");
   }
@@ -896,21 +896,21 @@ function installAutorestart() {
   // 1. Install base hooks (idempotent)
   install();
 
-  // 2. Patch hooks to include ENTIENT_GATEWAY_AUTORESTART=1 in the env
+  // 2. Patch hooks to include ENTIENT_SPEND_AUTORESTART=1 in the env
   let settings = {};
   if (fs.existsSync(CLAUDE_SETTINGS)) {
     try { settings = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS, "utf8")); } catch (_) {}
   }
-  if (!settings.hooks) { console.log("  Base hooks not found. Run entient-gateway install first."); return; }
+  if (!settings.hooks) { console.log("  Base hooks not found. Run entient-spend install first."); return; }
 
   let patched = 0, alreadyPatched = 0;
   for (const event of ["UserPromptSubmit", "PostToolUse"]) {
     const hooks = settings.hooks[event] || [];
     for (const group of hooks) {
       for (const h of (group.hooks || [])) {
-        if ((h.command || "").includes("entient-gateway")) {
-          if (!h.env || !h.env.ENTIENT_GATEWAY_AUTORESTART) {
-            h.env = { ...(h.env || {}), ENTIENT_GATEWAY_AUTORESTART: "1" };
+        if ((h.command || "").includes("entient-spend")) {
+          if (!h.env || !h.env.ENTIENT_SPEND_AUTORESTART) {
+            h.env = { ...(h.env || {}), ENTIENT_SPEND_AUTORESTART: "1" };
             patched++;
           } else {
             alreadyPatched++;
@@ -936,7 +936,7 @@ function installAutorestart() {
   console.log(`\n  Run that instead of 'claude'.`);
   console.log(`  When a session hits ${DEFAULTS.threshold}x waste, it will rotate automatically.`);
   console.log(`  Context is saved and injected into the fresh session.`);
-  console.log(`\n  To revert: entient-gateway uninstall`);
+  console.log(`\n  To revert: entient-spend uninstall`);
 }
 
 function _claudeLoopScript() {
@@ -944,11 +944,11 @@ function _claudeLoopScript() {
   // claude is an npm .cmd shim; cmd /c resolves it correctly and inherits the console.
   // The hook kills its parent node PID and writes the restart-flag.
   // When claude exits, check flag and relaunch.
-  return String.raw`# claude-loop.ps1 -- generated by entient-gateway install-autorestart
+  return String.raw`# claude-loop.ps1 -- generated by entient-spend install-autorestart
 # Run this instead of 'claude'. Sessions rotate automatically when waste hits threshold.
 # Usage: .\claude-loop.ps1
 
-$flagPath    = Join-Path $HOME ".entient-gateway\restart-flag"
+$flagPath    = Join-Path $HOME ".entient-spend\restart-flag"
 $maxRestarts = 50
 $restarts    = 0
 
@@ -1078,7 +1078,7 @@ function installShadow() {
   const cfg = saveConfig({ mode: "shadow" });
   console.log(`\n  Shadow mode ON.`);
   console.log(`  Hooks will warn (stderr) when waste threshold is exceeded, but will NOT block.`);
-  console.log(`  To upgrade to full enforcement: entient-gateway install`);
+  console.log(`  To upgrade to full enforcement: entient-spend install`);
   console.log(`  Config: ${CONFIG_FILE}  (mode: "${cfg.mode}", threshold: ${cfg.threshold}x)`);
 }
 
@@ -1095,16 +1095,16 @@ function uninstall() {
   for (const event of Object.keys(settings.hooks)) {
     const before = settings.hooks[event].length;
     settings.hooks[event] = settings.hooks[event].filter(h =>
-      !(h.hooks || []).some(hh => (hh.command || "").includes("entient-gateway"))
+      !(h.hooks || []).some(hh => (hh.command || "").includes("entient-spend"))
     );
     removed += before - settings.hooks[event].length;
   }
   fs.writeFileSync(CLAUDE_SETTINGS, JSON.stringify(settings, null, 2), "utf8");
-  console.log(`✓ Removed ${removed} entient-gateway hook(s).`);
+  console.log(`✓ Removed ${removed} entient-spend hook(s).`);
 }
 
 function status() {
-  console.log("── entient-gateway status ──\n");
+  console.log("── entient-spend status ──\n");
 
   // Hook installation
   let hooksInstalled = 0;
@@ -1113,7 +1113,7 @@ function status() {
       const s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS, "utf8"));
       for (const event of Object.keys(HOOKS_TO_INSTALL)) {
         const hooks = s.hooks?.[event] || [];
-        const found = hooks.some(h => (h.hooks || []).some(hh => (hh.command || "").includes("entient-gateway")));
+        const found = hooks.some(h => (h.hooks || []).some(hh => (hh.command || "").includes("entient-spend")));
         console.log(`  ${event.padEnd(22)} ${found ? "✓ installed" : "✗ not installed"}`);
         if (found) hooksInstalled++;
       }
@@ -1143,7 +1143,7 @@ function status() {
   const cfg = loadConfig();
   const modeLabel = cfg.mode === "shadow" ? "shadow (warn only, no blocking)" : "enforce (blocks at threshold)";
   console.log(`\n  Mode: ${modeLabel}`);
-  console.log(`  ${hooksInstalled === 4 ? "✓ Fully installed" : `⚠ Run 'entient-gateway install' to enable enforcement`}`);
+  console.log(`  ${hooksInstalled === 4 ? "✓ Fully installed" : `⚠ Run 'entient-spend install' to enable enforcement`}`);
 }
 
 // ── Analytics (original report) ─────────────────────────────────────────────
@@ -1461,7 +1461,7 @@ function versionInRange(v, min, max) {
 }
 
 function doctor() {
-  console.log("\n  entient-gateway doctor\n");
+  console.log("\n  entient-spend doctor\n");
 
   // Current version
   try {
@@ -1652,12 +1652,12 @@ function formatReport(sub, window) {
     lines.push("");
   }
   if (!enforced2) {
-    lines.push(`  ${step++}. Run entient-gateway install to enforce this automatically.`);
+    lines.push(`  ${step++}. Run entient-spend install to enforce this automatically.`);
     lines.push(`     Sessions get blocked at 10x waste. Context saved. Injected on resume.`);
     lines.push("");
   } else {
     lines.push(`  ${step++}. Enforcement is ON. Sessions will be blocked at 10x waste.`);
-    lines.push(`     Config: ~/.entient-gateway/config.json`);
+    lines.push(`     Config: ~/.entient-spend/config.json`);
     lines.push("");
   }
   if (!hasWrongModel && !hasBloat && !hasReplay) {
@@ -1665,7 +1665,7 @@ function formatReport(sub, window) {
     lines.push("  Your sessions look clean.");
     lines.push("");
   }
-  lines.push("  entient.ai — routes each prompt to the right model, deflects repeats");
+  lines.push("  entient.com — routes each prompt to the right model, deflects repeats");
   lines.push("");
   lines.push(hr("="));
   lines.push(`  Generated ${new Date().toISOString().slice(0, 19).replace("T", " ")}`);
@@ -1740,21 +1740,21 @@ function readGitHead(dir) {
 function redundancyReport(opts) {
   const ga = gateAdapter();
   if (!ga) {
-    console.log("[entient-gateway] gate_adapter unavailable — is entient_agent importable by python?");
-    console.log("  Try: ENTIENT_PYTHON=/path/to/python entient-gateway redundancy");
+    console.log("[entient-spend] gate_adapter unavailable — is entient_agent importable by python?");
+    console.log("  Try: ENTIENT_PYTHON=/path/to/python entient-spend redundancy");
     process.exit(3);
   }
 
   const sessionFile = opts.sessionFile || currentSessionFile();
   if (!sessionFile || !fs.existsSync(sessionFile)) {
-    console.log("[entient-gateway] no session file to analyze.");
-    console.log("  Pass one explicitly: entient-gateway redundancy <session.jsonl>");
+    console.log("[entient-spend] no session file to analyze.");
+    console.log("  Pass one explicitly: entient-spend redundancy <session.jsonl>");
     process.exit(2);
   }
 
   const uses = extractToolUses(sessionFile);
   if (!uses.length) {
-    console.log(`[entient-gateway] no tool uses found in ${sessionFile}`);
+    console.log(`[entient-spend] no tool uses found in ${sessionFile}`);
     process.exit(0);
   }
 
@@ -1829,7 +1829,7 @@ function redundancyReport(opts) {
 function gateStatsCmd() {
   const ga = gateAdapter();
   if (!ga) {
-    console.log("[entient-gateway] gate_adapter unavailable — python/entient_agent not importable.");
+    console.log("[entient-spend] gate_adapter unavailable — python/entient_agent not importable.");
     process.exit(3);
   }
   const s = ga.gateStats();
@@ -1870,7 +1870,7 @@ function parseArgs() {
     else if (args[i] === "--json")   opts.json = true;
     else if (args[i] === "--report") opts.report = true;
     else if (args[i] === "--help" || args[i] === "-h") {
-      console.log("Usage: entient-gateway [install|install --shadow|uninstall|status] [--last 7d] [--json]");
+      console.log("Usage: entient-spend [install|install --shadow|uninstall|status] [--last 7d] [--json]");
       console.log("  install --shadow   Install hooks in observe-only mode (warn, never block)");
       console.log("  install            Install hooks in enforce mode (blocks at 10x waste)");
       process.exit(0);
@@ -1914,7 +1914,7 @@ function hooksInstalled() {
   try {
     const s = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS, "utf8"));
     return Object.values(s.hooks || {}).flat()
-      .some(h => (h.hooks || []).some(hh => (hh.command || "").includes("entient-gateway")));
+      .some(h => (h.hooks || []).some(hh => (hh.command || "").includes("entient-spend")));
   } catch (_) { return false; }
 }
 
@@ -2002,7 +2002,7 @@ function printDashboard(sub, bug, enforced, window, billing) {
   const budget     = (billing && billing.budget) || null;
 
   console.log("");
-  console.log(bold(`  Entient Gateway`) + dim(`  —  last ${label}`));
+  console.log(bold(`  Entient Spend`) + dim(`  —  last ${label}`));
   console.log(`  ${SL}`);
   console.log("");
 
@@ -2062,7 +2062,7 @@ function printDashboard(sub, bug, enforced, window, billing) {
     console.log(`  Each new session loads ~${yl(overheadK + "k")} tokens of tools/system prompt before you type a word.`);
     console.log(`  Across ${ss.sessions} sessions: ${yl(totalK + "k")} tokens burned on startup${costStr}.`);
     console.log(`  ${dim('This is the "loaded tools" problem — re-injected cold every session.')}`);
-    console.log(`  ${dim("entient.ai collapses repeated tool loading to near-zero after the first run.")}`);
+    console.log(`  ${dim("entient.com collapses repeated tool loading to near-zero after the first run.")}`);
     console.log("");
   }
 
@@ -2304,10 +2304,10 @@ function showEnforceScreen(enforced) {
     console.log(`    Your session state is saved — branch, open files, what you were doing.`);
     console.log(`    Start a fresh session and context is injected automatically.`);
     console.log("");
-    console.log(`  Config     ~/.entient-gateway/config.json`);
+    console.log(`  Config     ~/.entient-spend/config.json`);
     console.log(`  ${dim("Threshold, min turns, baseline window — all adjustable.")}`);
     console.log("");
-    console.log(`  ${dim("To turn off: entient-gateway uninstall")}`);
+    console.log(`  ${dim("To turn off: entient-spend uninstall")}`);
   } else {
     console.log(`  Status    ${yl("OFF")}`);
     console.log("");
@@ -2407,10 +2407,10 @@ function generateHTML(sub, bug, enforced) {
 
 <div class="header">
   <div>
-    <div class="brand">Entient Gateway</div>
+    <div class="brand">Entient Spend</div>
     <div class="date">Report generated ${now} · Last 7 days</div>
   </div>
-  <div class="tagline">entient.ai — AI cost enforcement</div>
+  <div class="tagline">entient.com — AI cost enforcement</div>
 </div>
 
 <div class="status-row">
@@ -2512,7 +2512,7 @@ ${(() => {
   if (hasWM)  items.push({ title: `Switch to Haiku for ${wm.haikuPct}% of your work`, body: `Your sessions ran ${model} on prompts that didn't need it. Start with <code style="color:#79c0ff">/model haiku</code>. Escalate to Sonnet only when the task gets complex.` });
   if (hasBl)  items.push({ title: `Stop the confirmation loop (${topBl}% of your turns)`, body: `"ok", "proceed", "continue" — each one re-sent your full context at full price. Batch your intent. Say what you want in one prompt instead of three.` });
   if (hasRep) items.push({ title: `Rotate sessions after 30 turns (you ran ${topRH}h)`, body: `Context cost compounds. By turn 30+, you're paying 10-20x more per prompt just to carry history. Use <code style="color:#79c0ff">/compact</code> or start fresh and paste a one-paragraph summary.` });
-  if (!enforced) items.push({ title: "Enable auto-enforcement", body: `Run <code style="color:#79c0ff">entient-gateway install</code> to block sessions at 10x waste automatically. Context is saved before each block and injected when you resume.` });
+  if (!enforced) items.push({ title: "Enable auto-enforcement", body: `Run <code style="color:#79c0ff">entient-spend install</code> to block sessions at 10x waste automatically. Context is saved before each block and injected when you resume.` });
   if (items.length === 0) items.push({ title: "Looking clean", body: "No significant waste patterns in this window. Keep sessions short, match the model to the work." });
   const cols = items.map(item => `<div><div style="font-weight:600;margin-bottom:6px;color:#58a6ff">${item.title}</div><div style="font-size:13px;color:#8b949e;line-height:1.6">${item.body}</div></div>`).join("");
   return `<div class="section"><div class="section-title">What to do — based on your data</div><div style="display:grid;grid-template-columns:${items.length > 1 ? "1fr 1fr" : "1fr"};gap:16px">${cols}</div></div>`;
@@ -2525,11 +2525,11 @@ ${(() => {
     No manual switching. No session rotation. No wasted tokens.
   </div>
   <br>
-  <a class="cta-url" href="https://entient.ai">entient.ai →</a>
+  <a class="cta-url" href="https://entient.com">entient.com →</a>
 </div>
 
 <div class="footer">
-  Generated by <strong>Entient Gateway</strong> · Data read locally, nothing uploaded · <a href="https://entient.ai" style="color:#555">entient.ai</a>
+  Generated by <strong>Entient Spend</strong> · Data read locally, nothing uploaded · <a href="https://entient.com" style="color:#555">entient.com</a>
 </div>
 
 </body>
@@ -2538,7 +2538,7 @@ ${(() => {
 
 function exportReport(sub, bug, enforced) {
   const html = generateHTML(sub, bug, enforced);
-  const outPath = path.join(os.homedir(), "entient-gateway-report.html");
+  const outPath = path.join(os.homedir(), "entient-spend-report.html");
   fs.writeFileSync(outPath, html, "utf8");
   console.log(`\n  ${green("✓")} Report saved: ${bold(outPath)}`);
   console.log(`  Open in your browser to view and share.`);
@@ -2558,7 +2558,7 @@ function exportReport(sub, bug, enforced) {
 async function countTokensCmd(opts) {
   const cfg = loadConfig();
   if (!cfg.anthropicApiKey) {
-    console.log(`\n  ${yl("No API key configured.")} Run: entient-gateway setup\n`);
+    console.log(`\n  ${yl("No API key configured.")} Run: entient-spend setup\n`);
     process.exit(1);
   }
   const model = opts.model || "claude-sonnet-4-5";
@@ -2572,8 +2572,8 @@ async function countTokensCmd(opts) {
     });
   }
   if (!text || !text.trim()) {
-    console.log("\n  Usage: echo 'your prompt' | entient-gateway count-tokens [--model claude-opus-4-7]");
-    console.log("         entient-gateway count-tokens --text 'your prompt'\n");
+    console.log("\n  Usage: echo 'your prompt' | entient-spend count-tokens [--model claude-opus-4-7]");
+    console.log("         entient-spend count-tokens --text 'your prompt'\n");
     process.exit(1);
   }
 
@@ -2616,7 +2616,7 @@ async function countTokensCmd(opts) {
 async function costReportCmd(windowStr = "30d") {
   const cfg = loadConfig();
   if (!cfg.anthropicAdminKey) {
-    console.log(`\n  ${yl("No admin key configured.")} Run: entient-gateway setup`);
+    console.log(`\n  ${yl("No admin key configured.")} Run: entient-spend setup`);
     console.log(`  Paste an Admin API key (apikey_... or sk-ant-admin...) when prompted.\n`);
     process.exit(1);
   }
@@ -2625,7 +2625,7 @@ async function costReportCmd(windowStr = "30d") {
   const res = await fetchAnthropicCostReport(cfg.anthropicAdminKey, days);
 
   console.log("");
-  console.log(bold(`  entient-gateway — AUTHORITATIVE COST REPORT`));
+  console.log(bold(`  entient-spend — AUTHORITATIVE COST REPORT`));
   console.log(`  Last ${windowStr}  |  Source: /v1/organizations/cost_report  (Anthropic Admin API)`);
   console.log(`  ${SL}`);
   console.log("");
@@ -2739,7 +2739,7 @@ function billingReport(windowStr = "30d") {
   const budget = cfg.monthlyBudget || null;
 
   console.log("");
-  console.log(bold(`  Entient Gateway — BILLING RECONCILIATION`));
+  console.log(bold(`  Entient Spend — BILLING RECONCILIATION`));
   console.log(`  Last ${windowStr}  |  Based on session token counts at Anthropic API rates`);
   console.log(`  ${SL}`);
   console.log("");
@@ -2762,7 +2762,7 @@ function billingReport(windowStr = "30d") {
     console.log("");
   } else {
     console.log(`  Estimated total      ${yl("$" + total.toFixed(2))}`);
-    console.log(`  ${dim("Set your plan cost: entient-gateway setup (enter monthly budget)")}`);
+    console.log(`  ${dim("Set your plan cost: entient-spend setup (enter monthly budget)")}`);
     console.log("");
   }
 
@@ -2800,7 +2800,7 @@ function billingReport(windowStr = "30d") {
     console.log(`  Sessions analyzed        ${ss2.sessions}`);
     console.log(`  Avg startup cost         ~${yl(overheadK + "k")} tokens/session  ${dim("(before first prompt)")}`);
     console.log(`  Total startup tokens     ~${yl(totalK + "k")} tokens  ${dim("= $" + ss2.overheadCost.toFixed(2) + " at Sonnet rates")}`);
-    console.log(`  ${dim("Fix: entient.ai collapses tool loading — first run witnesses it, every run after is free.")}`);
+    console.log(`  ${dim("Fix: entient.com collapses tool loading — first run witnesses it, every run after is free.")}`);
     console.log("");
   }
 
@@ -2834,7 +2834,7 @@ function reconcile(exportFile) {
     console.log("");
     console.log("  Steps to export from Token Slasher:");
     console.log("  1. Open Chrome → click the Token Slasher extension icon");
-    console.log("  2. Click  Export to entient-gateway");
+    console.log("  2. Click  Export to entient-spend");
     console.log("  3. Save as  claude-audit-billing.json  in your Downloads folder");
     console.log("  4. Run  node audit.js reconcile  again");
     console.log("");
@@ -2895,7 +2895,7 @@ print(json.dumps([{'date':r[0],'model':r[1],'tokens':r[2],'cost':r[3],'calls':r[
   }
 
   console.log("");
-  console.log(bold("  Entient Gateway — RECEIPT RECONCILIATION"));
+  console.log(bold("  Entient Spend — RECEIPT RECONCILIATION"));
   console.log(`  Export: ${filePath}  |  Exported: ${exportData.exported_at || "unknown"}`);
   console.log(`  ${SL}`);
   console.log("");
@@ -3124,13 +3124,13 @@ function renderHud() {
 
   const lines = [];
   lines.push("");
-  lines.push(bold("  Entient Gateway  live HUD") + dim("    (cumulative, refresh 2s, q to quit)"));
+  lines.push(bold("  Entient Spend  live HUD") + dim("    (cumulative, refresh 2s, q to quit)"));
   lines.push("  " + SL);
 
   if (!gov) {
     lines.push("  " + dim("no ENTIENT governance log found at"));
     lines.push("  " + dim("  " + ENTIENT_GOV_LOG));
-    lines.push("  " + dim("install the gateway at entient.ai to unlock deferral metrics"));
+    lines.push("  " + dim("install the gateway at entient.com to unlock deferral metrics"));
   } else {
     const deflectPct  = gov.total ? (gov.deflect / gov.total) * 100 : 0;
     const per100      = Math.round(deflectPct);
@@ -3198,8 +3198,8 @@ function renderHud() {
              Object.entries(fwd.sources).map(([k, v]) => `${k}=${v}`).join(" "));
   lines.push("");
   const footer = (gov && gov.measuredCount > 0)
-    ? "input $ avoided = sum of Anthropic count_tokens × public input rate · entient.ai"
-    : "savings estimated from avoided forwarded tokens · entient.ai";
+    ? "input $ avoided = sum of Anthropic count_tokens × public input rate · entient.com"
+    : "savings estimated from avoided forwarded tokens · entient.com";
   lines.push("  " + dim(footer));
   lines.push("");
 

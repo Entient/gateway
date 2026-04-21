@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Evergreen numbers audit for the Gateway Runtime.
+// Evergreen numbers audit for Entient Spend.
 // See AUDIT_SPEC.md for definitions and the publishing rule.
 //
 //   node audit/run_audit.js            # default 30-day window
@@ -239,7 +239,7 @@ function computeVerdict(report) {
 // ── Report ──────────────────────────────────────────────────────────────────
 function renderMd(report) {
   const L = [];
-  L.push(`# Gateway Runtime — Numbers Audit`);
+  L.push(`# Entient Spend — Numbers Audit`);
   L.push(``);
   L.push(`UTC: ${report.version.utc}`);
   L.push(`Window: last ${report.window_days} days`);

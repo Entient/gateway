@@ -1,14 +1,14 @@
 {
-  "name": "@entient/gateway",
-  "version": "1.0.0",
-  "description": "Entient Gateway Runtime — the local half of Entient Gateway. Collapse redundant LLM work, preserve session context across compactions, surface real $ saved. Companion to Gateway Cloud (receipts/identity/trust).",
+  "name": "@entient/spend",
+  "version": "0.1.0",
+  "description": "Entient Spend — AI spend reconciliation. Cross-references Anthropic billing exports (via Token Slasher) with local metering to attribute every invoice dollar to a tool, project, and day. Pairs with the Token Slasher Chrome extension.",
   "bin": {
-    "entient-gateway": "./audit.js"
+    "entient-spend": "./audit.js"
   },
   "scripts": {
     "start": "node audit.js"
   },
-  "keywords": ["entient", "entient-gateway", "gateway", "gateway-runtime", "llm-cost", "collapse", "context-preservation", "hooks", "enforcement"],
+  "keywords": ["entient", "spend", "reconcile", "billing", "anthropic", "llm-cost", "metering", "hooks"],
   "author": "Entient",
   "license": "MIT",
   "engines": {
@@ -18,7 +18,7 @@
     "type": "git",
     "url": "https://github.com/Entient/gateway"
   },
-  "homepage": "https://github.com/Entient/gateway#readme",
+  "homepage": "https://entient.com",
   "bugs": {
     "url": "https://github.com/Entient/gateway/issues"
   }
