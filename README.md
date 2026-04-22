@@ -2,7 +2,7 @@
 
 **AI spend reconciliation. Turn opaque invoice totals into an itemized bill: which tool, which project, which day.**
 
-Entient Spend pairs with the [Token Slasher](https://github.com/Entient/token-slasher) Chrome extension to cross-reference your Anthropic billing exports against your local API metering. Every $15 overage email becomes auditable.
+Entient Spend pairs with the [entient-spend Chrome extension](https://github.com/Entient/token-slasher) (formerly Token Slasher) to cross-reference your Anthropic billing exports against your local API metering. Every $15 overage email becomes auditable.
 
 It also ships a set of optional enforcement hooks for Claude Code that cap runaway-waste sessions and preserve context across compactions — but the headline feature is reconciliation.
 
@@ -86,7 +86,7 @@ entient-spend uninstall                      # removes only entient-spend hooks
 | `entient-spend doctor` | Scan for Claude Code versions with known cache bugs |
 | `entient-spend setup` | Store Anthropic API key for real billing reconciliation |
 | `entient-spend billing [--last 30d]` | Fetch real daily charges from Anthropic `/v1/usage` |
-| `entient-spend reconcile <export-file>` | Cross-reference a Token Slasher export against local metering |
+| `entient-spend reconcile <export-file>` | Cross-reference an entient-spend extension export against local metering |
 | `entient-spend redundancy [session-file]` | Walk tool-use blocks, hit the ExecutionGate, report redundant calls |
 | `entient-spend gate-stats` | JSON dump of ExecutionGate stats |
 

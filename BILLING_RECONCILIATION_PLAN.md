@@ -3,7 +3,7 @@
 ## WHERE TO FIND THIS
 - This file: `C:\Users\Brock1\Desktop\entient-spend\BILLING_RECONCILIATION_PLAN.md`
 - Memory doc: `~/.claude/projects/C--Users-Brock1-Desktop-Agent/memory/project_claude_audit.md`
-- Token Slasher extension: `C:\Users\Brock1\Desktop\token-slasher-extension\`
+- entient-spend Chrome extension (formerly Token Slasher): `C:\Users\Brock1\Desktop\entient-spend-extension\`
 - Entient Spend tool: `C:\Users\Brock1\Desktop\entient-spend\audit.js`
 
 ---
@@ -39,11 +39,11 @@
 
 ## The Full Solution (3 parts, all exist or need minor additions)
 
-### Part 1 — Token Slasher (ALREADY BUILT + INSTALLED)
+### Part 1 — entient-spend Chrome extension (ALREADY BUILT + INSTALLED, formerly Token Slasher)
 
-**Repo:** `C:\Users\Brock1\Desktop\token-slasher-extension\`
+**Repo:** `C:\Users\Brock1\Desktop\entient-spend-extension\`
 
-Token Slasher v2.2.0 is already:
+The extension v2.2.0 is already:
 - Installed as a Chrome extension (unpacked)
 - Targeting `console.anthropic.com/settings/billing` and `/settings/usage`
 - Scraping spend, tokens, requests on every visit
@@ -52,7 +52,7 @@ Token Slasher v2.2.0 is already:
 **What's missing:** An export button.
 
 **Fix needed (popup.js):** Add "Export to entient-spend" button that writes
-`chrome.storage.local` history to a file the user can save. Token Slasher
+`chrome.storage.local` history to a file the user can save. The extension
 already has the data — it just needs a way out.
 
 When user clicks export:
@@ -62,7 +62,7 @@ When user clicks export:
 
 ### Part 2 — entient-spend reconcile command (TO BUILD)
 
-`node audit.js reconcile` reads `~/claude-audit-billing.json` (from Token Slasher export)
+`node audit.js reconcile` reads `~/claude-audit-billing.json` (from the entient-spend extension export)
 and cross-references with `metering.db` + session files.
 
 Output: Every invoice explained. Which day, which tool, which project caused it.
@@ -86,8 +86,8 @@ Once done: every dollar is visible. No more mystery charges.
 
 ## Next Steps (in order)
 
-1. **Add export button to Token Slasher popup**
-   - File: `C:\Users\Brock1\Desktop\token-slasher-extension\popup.js`
+1. **Add export button to the entient-spend extension popup**
+   - File: `C:\Users\Brock1\Desktop\entient-spend-extension\popup.js`
    - Add button that dumps `chrome.storage.local[ts_history]` to downloadable JSON
    - Reload extension in Chrome (chrome://extensions → reload)
 

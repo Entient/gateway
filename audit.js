@@ -2819,21 +2819,21 @@ function billingReport(windowStr = "30d") {
 }
 
 // ── Reconcile command ────────────────────────────────────────────────────────
-// Reads claude-audit-billing.json (from Token Slasher export) and cross-references
+// Reads claude-audit-billing.json (from the entient-spend extension export) and cross-references
 // with metering.db to explain every Anthropic email receipt.
 
 function reconcile(exportFile) {
   const defaultFile = path.join(os.homedir(), "Downloads", "claude-audit-billing.json");
   const filePath = exportFile || defaultFile;
 
-  // Load Token Slasher export
+  // Load entient-spend extension export
   if (!fs.existsSync(filePath)) {
     console.log("");
     console.log(bold("  RECONCILE — No export file found"));
     console.log(`  Expected: ${filePath}`);
     console.log("");
-    console.log("  Steps to export from Token Slasher:");
-    console.log("  1. Open Chrome → click the Token Slasher extension icon");
+    console.log("  Steps to export from the entient-spend extension:");
+    console.log("  1. Open Chrome → click the entient-spend extension icon");
     console.log("  2. Click  Export to entient-spend");
     console.log("  3. Save as  claude-audit-billing.json  in your Downloads folder");
     console.log("  4. Run  node audit.js reconcile  again");
@@ -2903,7 +2903,7 @@ print(json.dumps([{'date':r[0],'model':r[1],'tokens':r[2],'cost':r[3],'calls':r[
   // ── Invoices section ──────────────────────────────────────────────────────
   if (invoices.length === 0) {
     console.log("  No Anthropic invoices found in export.");
-    console.log(`  ${dim("Visit console.anthropic.com/settings/billing while Token Slasher is active,")}`);
+    console.log(`  ${dim("Visit console.anthropic.com/settings/billing while the entient-spend extension is active,")}`);
     console.log(`  ${dim("then re-export.")}`);
     console.log("");
   } else {
@@ -2946,7 +2946,7 @@ print(json.dumps([{'date':r[0],'model':r[1],'tokens':r[2],'cost':r[3],'calls':r[
     console.log("");
   }
 
-  // ── Daily API usage from Token Slasher ────────────────────────────────────
+  // ── Daily API usage from entient-spend extension ──────────────────────────
   if (dailyUsage.length > 0) {
     console.log(`  DAILY USAGE FROM ANTHROPIC CONSOLE  (${dailyUsage.length} rows)`);
     console.log(`  ${SL}`);
@@ -2993,7 +2993,7 @@ print(json.dumps([{'date':r[0],'model':r[1],'tokens':r[2],'cost':r[3],'calls':r[
   console.log(`  Until then, estimated untracked spend: $2-5/month (labeling/synthesis).`);
   console.log("");
   console.log(`  ${dim("To get full billing data: visit console.anthropic.com/settings/billing")}`);
-  console.log(`  ${dim("and console.anthropic.com/settings/usage while Token Slasher is active.")}`);
+  console.log(`  ${dim("and console.anthropic.com/settings/usage while the entient-spend extension is active.")}`);
   console.log("");
 }
 

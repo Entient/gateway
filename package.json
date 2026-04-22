@@ -1,7 +1,7 @@
 {
   "name": "@entient/spend",
   "version": "0.1.0",
-  "description": "Entient Spend — AI spend reconciliation. Cross-references Anthropic billing exports (via Token Slasher) with local metering to attribute every invoice dollar to a tool, project, and day. Pairs with the Token Slasher Chrome extension.",
+  "description": "Entient Spend — AI spend reconciliation. Cross-references Anthropic billing exports with local metering to attribute every invoice dollar to a tool, project, and day. Pairs with the entient-spend Chrome extension.",
   "bin": {
     "entient-spend": "./audit.js"
   },
