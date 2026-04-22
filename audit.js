@@ -803,6 +803,35 @@ function hookStart() {
   process.exit(0);
 }
 
+// Claude Code statusLine — one-line spend indicator rendered above the input box.
+// Must be fast (≤ ~50ms) and fail-silent (a broken statusline hides itself).
+function hookStatus() {
+  try {
+    const file = currentSessionFile();
+    if (!file) { process.exit(0); }
+    const cfg = loadConfig();
+    const w = computeWasteFactor(file, cfg);
+    const turns = _readSessionTurnsPriced(file);
+    const cost = turns.length ? _sessionCostUSD(turns) : 0;
+
+    const blockAt = cfg.threshold ?? 5;
+
+    // Silent below both waste-2× AND cost-$2 — don't pollute statusline when nothing's happening.
+    if ((!w || w.factor < 2) && cost < 2) { process.exit(0); }
+
+    let indicator = "·";
+    if ((w && w.factor >= blockAt) || cost >= 10) indicator = "⛔";
+    else if ((w && w.factor >= 3) || cost >= 5)   indicator = "⚠";
+
+    const segs = [`${indicator} spend`];
+    if (w) segs.push(`${w.factor}×`, `${w.turns}t`);
+    if (cost > 0) segs.push(`$${cost.toFixed(2)}`);
+
+    process.stdout.write(segs.join(" · "));
+  } catch (_) { /* fail silent */ }
+  process.exit(0);
+}
+
 // ── Context preservation ─────────────────────────────────────────────────────
 
 /**
@@ -3416,6 +3445,7 @@ function main() {
   if (opts.hook === "tool")    { hookTool();    return; }
   if (opts.hook === "compact") { hookCompact(); return; }
   if (opts.hook === "start")   { hookStart();   return; }
+  if (opts.hook === "status")  { hookStatus();  return; }
 
   // Management commands
   if (opts.command === "install")            { install();            return; }
