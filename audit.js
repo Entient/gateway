@@ -1134,9 +1134,24 @@ function saveSessionContext(sessionFile, waste) {
   const projectDir  = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const project     = path.basename(projectDir);
   const branch      = getGitBranch(projectDir);
-  const modified    = getModifiedFiles(projectDir);
+  const dirty       = getStructuredDirty(projectDir);
   const lastWork    = sessionFile ? getLastActivity(sessionFile) : null;
   const headSubject = getHeadCommitSubject(projectDir);
+  const objective   = inferObjective(lastWork);
+  const nextAction  = inferNextAction(lastWork);
+
+  const { ready, readyReason } = _readinessCheck({
+    branch, headSubject, hasLastActivity: !!lastWork, objective, nextAction,
+  });
+
+  const dirtySummary = dirty.total === 0
+    ? "clean"
+    : `${dirty.total} (staged ${dirty.staged.length} / unstaged ${dirty.unstaged.length} / untracked ${dirty.untracked.length})`;
+
+  const dirtyDetail = [];
+  if (dirty.staged.length)   dirtyDetail.push(`  - Staged: ${dirty.staged.slice(0, 10).join(", ")}${dirty.staged.length > 10 ? ", …" : ""}`);
+  if (dirty.unstaged.length) dirtyDetail.push(`  - Unstaged: ${dirty.unstaged.slice(0, 10).join(", ")}${dirty.unstaged.length > 10 ? ", …" : ""}`);
+  if (dirty.untracked.length) dirtyDetail.push(`  - Untracked: ${dirty.untracked.slice(0, 10).join(", ")}${dirty.untracked.length > 10 ? ", …" : ""}`);
 
   const lines = [
     `# Previous Session (saved by entient-spend)`,
@@ -1147,16 +1162,24 @@ function saveSessionContext(sessionFile, waste) {
     `- **Saved:** ${new Date().toISOString()}`,
     waste ? `- **Session size:** ${waste.turns} turns, ~${(waste.current / 1000).toFixed(0)}k tokens/turn` : null,
     waste ? `- **Waste factor:** ${waste.factor}x (started at ~${(waste.baseline / 1000).toFixed(0)}k/turn)` : null,
-    modified.length ? `- **Files modified:** ${modified.slice(0, 10).join(", ")}` : null,
     headSubject ? `- **Last commit on branch:** ${headSubject}` : null,
+    `- **Handoff ready:** ${ready ? "yes" : `no — ${readyReason}`}`,
+    ``,
+    `## Dirty state`,
+    `- Total: ${dirtySummary}`,
+    ...dirtyDetail,
+    ``,
+    `## Inferred continuity (heuristic — restate explicitly on re-entry)`,
+    `- **Objective:** ${objective || "_not inferred_"}`,
+    `- **Next action:** ${nextAction || "_not inferred_"}`,
     ``,
     `## Resume hints (re-entry guide)`,
     `The session was rotated under pressure. To re-enter productively:`,
     ``,
     `1. Skim **Last Activity** below for the active objective and mid-flight context.`,
     `2. Run \`git status\` + \`git log --oneline -10\` for uncommitted changes and recent commits.`,
-    `3. Identify the next concrete action from the activity excerpt; continue from there.`,
-    `4. Active decisions, blockers, and next actions are inferred from the excerpt — restate explicitly in your first prompt to lock the thread.`,
+    `3. The inferred objective and next action above are heuristic — confirm or correct in your first prompt.`,
+    `4. Active decisions and blockers are not auto-extracted; restate them explicitly to lock the thread.`,
     lastWork ? `\n## Last Activity\n${lastWork}` : null,
   ].filter(l => l !== null).join("\n");
 
@@ -1167,14 +1190,24 @@ function saveSessionContext(sessionFile, waste) {
       contextPath: LAST_SESSION,
       project,
       branch: branch || null,
-      modifiedCount: modified.length,
+      dirty,                          // { staged, unstaged, untracked, total }
+      modifiedCount: dirty.total,     // back-compat: total dirty paths (any kind)
       headSubject: headSubject || null,
       hasLastActivity: !!lastWork,
+      objective: objective || null,
+      nextAction: nextAction || null,
+      ready,
+      readyReason,
       turns: waste ? waste.turns : null,
       factor: waste ? waste.factor : null,
     };
   } catch (err) {
-    return { ok: false, error: String(err) };
+    return {
+      ok: false,
+      error: String(err),
+      ready: false,
+      readyReason: `write-failed: ${String(err).slice(0, 120)}`,
+    };
   }
 }
 
@@ -1197,12 +1230,77 @@ function getGitBranch(dir) {
   } catch (_) { return null; }
 }
 
-function getModifiedFiles(dir) {
+/**
+ * Parse `git status --porcelain` into structured buckets.
+ * Returns { staged, unstaged, untracked, total } — a file with both index
+ * and worktree changes (MM) appears in both staged and unstaged; total is
+ * the count of distinct (path × bucket) entries and is the figure we report.
+ */
+function getStructuredDirty(dir) {
   try {
     const { execSync } = require("child_process");
-    return execSync("git diff --name-only HEAD 2>/dev/null", { cwd: dir, encoding: "utf8" })
-      .split("\n").filter(Boolean);
-  } catch (_) { return []; }
+    const out = execSync("git status --porcelain", {
+      cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+    });
+    const staged = [], unstaged = [], untracked = [];
+    for (const line of out.split("\n")) {
+      if (line.length < 3) continue;
+      const x = line[0], y = line[1], p = line.slice(3);
+      if (x === "?" && y === "?") { untracked.push(p); continue; }
+      if (x !== " " && x !== "?") staged.push(p);
+      if (y !== " " && y !== "?") unstaged.push(p);
+    }
+    return {
+      staged, unstaged, untracked,
+      total: staged.length + unstaged.length + untracked.length,
+    };
+  } catch (_) {
+    return { staged: [], unstaged: [], untracked: [], total: 0 };
+  }
+}
+
+// Heuristic extractors over getLastActivity() output — which is "oldest
+// excerpt \n\n---\n\n newest excerpt". Objective comes from the oldest
+// (what was being worked on); next action from the newest (what was about
+// to happen). Both can return null; the readiness check gates on non-null.
+
+function _sentences(text) {
+  if (!text) return [];
+  return String(text)
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(/(?<=[.!?])\s+/)
+    .map(s => s.trim())
+    .filter(s => s.length >= 20);
+}
+
+function inferObjective(lastWork) {
+  if (!lastWork) return null;
+  const [oldest] = String(lastWork).split("\n\n---\n\n");
+  const sents = _sentences(oldest);
+  return sents.length ? sents[0].slice(0, 240) : null;
+}
+
+function inferNextAction(lastWork) {
+  if (!lastWork) return null;
+  const parts = String(lastWork).split("\n\n---\n\n");
+  const newest = parts[parts.length - 1];
+  // Prefer explicit "Next:" / "Next step:" lines if present.
+  const m = newest.match(/(?:^|\n)[\s>*-]*(?:##?\s*)?Next(?:\s+step)?:\s*(.+?)(?:\n\n|\n#|$)/i);
+  if (m && m[1].trim().length >= 10) return m[1].replace(/\s+/g, " ").trim().slice(0, 240);
+  const sents = _sentences(newest);
+  return sents.length ? sents[sents.length - 1].slice(0, 240) : null;
+}
+
+function _readinessCheck({ branch, headSubject, hasLastActivity, objective, nextAction }) {
+  const missing = [];
+  if (!branch)          missing.push("branch");
+  if (!headSubject)     missing.push("last-commit-subject");
+  if (!hasLastActivity) missing.push("last-activity-excerpt");
+  if (!objective)       missing.push("inferred-objective");
+  if (!nextAction)      missing.push("inferred-next-action");
+  if (missing.length === 0) return { ready: true, readyReason: null };
+  return { ready: false, readyReason: `missing: ${missing.join(", ")}` };
 }
 
 // ── Install / uninstall ──────────────────────────────────────────────────────
